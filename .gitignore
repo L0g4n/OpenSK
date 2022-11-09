@@ -16,4 +16,4 @@ target/
 __pycache__
 
 # ctags
-tags
+**/tags*
