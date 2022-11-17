@@ -105,14 +105,14 @@ pub struct Timer<S: Syscalls, C: platform::subscribe::Config = DefaultConfig> {
     _marker_c: PhantomData<C>,
 }
 
-pub struct WithCallback<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(ClockValue)> {
+pub struct WithCallback<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)> {
     callback: CB,
     clock_frequency: Hz,
     _marker_s: PhantomData<S>,
     _marker_c: PhantomData<C>,
 }
 
-pub fn with_callback<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(ClockValue)>(
+pub fn with_callback<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>(
     callback: CB,
 ) -> TimerUpcallConsumer<S, C, CB> {
     TimerUpcallConsumer {
@@ -125,11 +125,11 @@ pub fn with_callback<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(Cloc
     }
 }
 
-struct TimerUpcallConsumer<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(ClockValue)> {
+pub struct TimerUpcallConsumer<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)> {
     data: WithCallback<S, C, CB>,
 }
 
-impl<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(ClockValue)>
+impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
     Upcall<OneId<DRIVER_NUM, { subscribe::CALLBACK }>> for TimerUpcallConsumer<S, C, CB>
 {
     fn upcall(&self, clock_value: u32, _: u32, _: u32) {
@@ -137,7 +137,7 @@ impl<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(ClockValue)>
     }
 }
 
-impl<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(ClockValue)>
+impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
     TimerUpcallConsumer<S, C, CB>
 {
     /// Initializes the data of the containing [WithCallback], i.e. number of notifications, clock frequency, and registers the
@@ -157,8 +157,10 @@ impl<S: Syscalls, C: platform::subscribe::Config, CB: FnMut(ClockValue)>
 
         // register the upcall for the timer
         share::scope(|handle| {
-            S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::CALLBACK }>(handle, self);
-        });
+            S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::CALLBACK }>(handle, self)?;
+
+            Ok::<(), ErrorCode>(())
+        })?;
 
         Ok(Timer {
             num_notifications,
@@ -193,7 +195,7 @@ impl<S: Syscalls, C: platform::subscribe::Config> Timer<S, C> {
         let mut with_callback = with_callback::<S, C, _>(|_| expired.set(true));
 
         let mut timer = with_callback.init().flex_unwrap();
-        let timer_alarm = timer.set_alarm(duration).flex_unwrap();
+        timer.set_alarm(duration).flex_unwrap();
 
         Util::<S>::yieldk_for(|| expired.get());
 
@@ -255,7 +257,7 @@ impl<S: Syscalls, C: platform::subscribe::Config> Timer<S, C> {
             }
         };
 
-        let alarm_instant = now.num_ticks() as u32 + ticks;
+        let alarm_instant = now.num_ticks() + ticks;
 
         S::command(DRIVER_NUM, command::SET_RELATIVE, alarm_instant, 0)
             .to_result::<u32, ErrorCode>()?;

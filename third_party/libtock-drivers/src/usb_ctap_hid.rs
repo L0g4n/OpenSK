@@ -92,9 +92,11 @@ impl<T: platform::allow_ro::Config + platform::allow_rw::Config + platform::subs
 {
 }
 
-pub struct UsbCtapHidListener<F: FnMut(u32, u32)>(pub F);
+pub struct UsbCtapHidListener<F: Fn(u32, u32)>(pub F);
 
-impl<F: FnMut(u32, u32)> Upcall<OneId<DRIVER_NUMBER, 0>> for UsbCtapHidListener<F> {
+impl<const SUB_NUM: u32, F: Fn(u32, u32)> Upcall<OneId<DRIVER_NUMBER, SUB_NUM>>
+    for UsbCtapHidListener<F>
+{
     fn upcall(&self, direction: u32, endpoint: u32, _: u32) {
         self.0(direction, endpoint)
     }
@@ -105,18 +107,18 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
     /// Register an listener to call with the arguments.
     ///
     /// Only one listener can be registered at a time.
-    fn register_listener<'share, F: FnMut(u32, u32)>(
+    fn register_listener<'share, const SUB_NUM: u32, F: Fn(u32, u32)>(
         listener: &'share UsbCtapHidListener<F>,
-        subscribe: Handle<Subscribe<'share, S, DRIVER_NUMBER, 0>>,
+        subscribe: Handle<Subscribe<'share, S, DRIVER_NUMBER, SUB_NUM>>,
     ) -> Result<(), ErrorCode> {
-        S::subscribe::<_, _, C, DRIVER_NUMBER, 0>(subscribe, listener)
+        S::subscribe::<_, _, C, DRIVER_NUMBER, SUB_NUM>(subscribe, listener)
     }
 
     /// Unregisters the listener.
     ///
     /// Can be called even if there was no previously registered listener.
-    fn unregister_listener() {
-        S::unsubscribe(DRIVER_NUMBER, 0)
+    fn unregister_listener(subscribe_num: u32) {
+        S::unsubscribe(DRIVER_NUMBER, subscribe_num);
     }
 
     /// Checks whether the driver is available and tries to setup the connection.
@@ -146,7 +148,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
     ) -> TockResult<SendOrRecvStatus> {
         #[cfg(feature = "verbose_usb")]
         writeln!(
-            Console::writer(),
+            Console::<S>::writer(),
             "Receiving packet with timeout of {}ms",
             timeout_delay.as_millis(),
         )
@@ -157,7 +159,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         #[cfg(feature = "verbose_usb")]
         if let Ok(SendOrRecvStatus::Received(endpoint)) = result {
             writeln!(
-                Console::writer(),
+                Console::<S>::writer(),
                 "Received packet = {:02x?} on endpoint {}",
                 buf as &[u8],
                 endpoint as u8,
@@ -188,9 +190,9 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
     ) -> TockResult<SendOrRecvStatus> {
         #[cfg(feature = "verbose_usb")]
         writeln!(
-            Console::writer(),
+            Console::<S>::writer(),
             "Sending packet with timeout of {}ms = {:02x?}",
-            timeout_delay.ms(),
+            timeout_delay.as_millis(),
             buf as &[u8]
         )
         .unwrap();
@@ -200,7 +202,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         #[cfg(feature = "verbose_usb")]
         if let Ok(SendOrRecvStatus::Received(received_endpoint)) = result {
             writeln!(
-                Console::writer(),
+                Console::<S>::writer(),
                 "Received packet = {:02x?} on endpoint {}",
                 buf as &[u8],
                 received_endpoint as u8,
@@ -217,12 +219,15 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
     ) -> TockResult<SendOrRecvStatus> {
         let status: Cell<Option<SendOrRecvStatus>> = Cell::new(None);
 
-        // TODO: make the close return a result to do proper error handling
-        let mut alarm = UsbCtapHidListener(|direction, endpoint| {
-            match UsbEndpoint::try_from(endpoint) {
-                Ok(endpoint) => status.set(Some(SendOrRecvStatus::Received(endpoint))),
-                Err(e) => status.set(None),
-            };
+        let alarm = UsbCtapHidListener(|direction, endpoint| match direction {
+            subscribe_nr::callback_status::RECEIVED => {
+                match UsbEndpoint::try_from(endpoint) {
+                    Ok(endpoint) => status.set(Some(SendOrRecvStatus::Received(endpoint))),
+                    Err(_) => status.set(None),
+                };
+            }
+            // Unknown direction or "transmitted" sent by the kernel
+            _ => status.set(None),
         });
 
         share::scope::<
@@ -237,25 +242,28 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             S::allow_ro::<C, DRIVER_NUMBER, { allow_nr::RECEIVE }>(allow, buf)?;
 
             // register the usb endpoint listener
-            Self::register_listener(&alarm, subscribe)?;
+            Self::register_listener::<{ subscribe_nr::RECEIVE }, _>(&alarm, subscribe)?;
 
-            Ok(())
+            Ok::<(), ErrorCode>(())
         })?;
 
         // Setup a time-out callback.
-        // let mut timeout_callback =
-        //     timer::with_callback(|_| status.set(Some(SendOrRecvStatus::Timeout)));
+        let mut timeout_callback =
+            timer::with_callback::<S, C, _>(|_| status.set(Some(SendOrRecvStatus::Timeout)));
         let mut timeout = timeout_callback.init()?;
-        let timeout_alarm = timeout.set_alarm(timeout_delay)?;
+        timeout.set_alarm(timeout_delay)?;
 
         // Trigger USB reception.
-        let result_code = S::command(DRIVER_NUMBER, command_nr::RECEIVE, 0, 0).to_result()?;
+        S::command(DRIVER_NUMBER, command_nr::RECEIVE, 0, 0).to_result::<u32, ErrorCode>()?;
 
         Util::<S>::yieldk_for(|| status.get().is_some());
-        Self::unregister_listener();
+        Self::unregister_listener(allow_nr::RECEIVE);
 
-        // TODO: do proper error handling
-        let status = status.get().unwrap();
+        // do proper error handling
+        let status = match status.get() {
+            Some(status) => Ok::<SendOrRecvStatus, TockError>(status),
+            None => Err(OutOfRangeError.into()),
+        }?;
 
         // Cleanup alarm callback.
         match timeout.stop_alarm() {
@@ -264,7 +272,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
                 if matches!(status, SendOrRecvStatus::Timeout) {
                     #[cfg(feature = "debug_ctap")]
                     writeln!(
-                        Console::writer(),
+                        Console::<S>::writer(),
                         "The receive timeout already expired, but the callback wasn't executed."
                     )
                     .unwrap();
@@ -281,7 +289,11 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         // Cancel USB transaction if necessary.
         if matches!(status, SendOrRecvStatus::Timeout) {
             #[cfg(feature = "verbose_usb")]
-            writeln!(Console::writer(), "Cancelling USB receive due to timeout").unwrap();
+            writeln!(
+                Console::<S>::writer(),
+                "Cancelling USB receive due to timeout"
+            )
+            .unwrap();
             let result =
                 S::command(DRIVER_NUMBER, command_nr::CANCEL, 0, 0).to_result::<(), ErrorCode>();
             match result {
@@ -293,7 +305,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
                     // The app should wait for it, but it may never happen if the remote app crashes.
                     // We just return to avoid a deadlock.
                     #[cfg(feature = "debug_ctap")]
-                    writeln!(Console::writer(), "Couldn't cancel the USB receive").unwrap();
+                    writeln!(Console::<S>::writer(), "Couldn't cancel the USB receive").unwrap();
                 }
                 Err(e) => panic!("Unexpected error when cancelling USB receive: {:?}", e),
             }
@@ -307,27 +319,15 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         timeout_delay: Duration,
         endpoint: UsbEndpoint,
     ) -> TockResult<SendOrRecvStatus> {
-        // let status = Cell::new(None);
-        // let mut alarm = UsbCtapHidListener(|direction, endpoint| {
-        //     status.set(Some(match direction {
-        //         subscribe_nr::callback_status::TRANSMITTED => Ok(SendOrRecvStatus::Sent),
-        //         subscribe_nr::callback_status::RECEIVED => {
-        //             UsbEndpoint::try_from(endpoint).map(|i| SendOrRecvStatus::Received(i))
-        //         }
-        //         // Unknown direction sent by the kernel.
-        //         _ => Err(OutOfRangeError.into()),
-        //     }));
-        // });
-
         let status: Cell<Option<SendOrRecvStatus>> = Cell::new(None);
-        // TODO: make the close return a result to do proper error handling
-        let mut alarm = UsbCtapHidListener(|direction, endpoint| {
+        let alarm = UsbCtapHidListener(|direction, endpoint| {
             let option = match direction {
                 subscribe_nr::callback_status::TRANSMITTED => Some(SendOrRecvStatus::Sent),
                 subscribe_nr::callback_status::RECEIVED => match UsbEndpoint::try_from(endpoint) {
                     Ok(endpoint) => Some(SendOrRecvStatus::Received(endpoint)),
                     Err(_) => None,
                 },
+                _ => None,
             };
             status.set(option);
         });
@@ -344,37 +344,34 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
             S::allow_rw::<C, DRIVER_NUMBER, { allow_nr::TRANSMIT_OR_RECEIVE }>(allow, buf)?;
 
-            Self::register_listener(&alarm, subscribe)?;
+            Self::register_listener::<{ subscribe_nr::TRANSMIT_OR_RECEIVE }, _>(&alarm, subscribe)?;
 
-            // S::subscribe::<_, _, C, DRIVER_NUMBER, { subscribe_nr::TRANSMIT_OR_RECEIVE }>(
-            //     subscribe, &mut alarm,
-            // )?;
-
-            Ok(())
+            Ok::<(), ErrorCode>(())
         })?;
 
-        share::scope(|handle| {});
-
         // Setup a time-out callback.
-        let mut timeout_callback = timer::with_callback(|_| {
+        let mut timeout_callback = timer::with_callback::<S, C, _>(|_| {
             status.set(Some(SendOrRecvStatus::Timeout));
         });
         let mut timeout = timeout_callback.init()?;
-        let timeout_alarm = timeout.set_alarm(timeout_delay)?;
+        timeout.set_alarm(timeout_delay)?;
 
         // Trigger USB transmission.
-        let result_code = S::command(
+        S::command(
             DRIVER_NUMBER,
             command_nr::TRANSMIT_OR_RECEIVE,
             endpoint as u32,
             0,
         )
-        .to_result()?;
+        .to_result::<(), ErrorCode>()?;
 
-        util::Util::yieldk_for(|| status.get().is_some());
-        Self::unregister_listener();
-        // TODO: do proper error handling
-        let status = status.get().unwrap();
+        util::Util::<S>::yieldk_for(|| status.get().is_some());
+        Self::unregister_listener(subscribe_nr::TRANSMIT_OR_RECEIVE);
+        // do proper error handling
+        let status = match status.get() {
+            Some(status) => Ok::<SendOrRecvStatus, TockError>(status),
+            None => Err(OutOfRangeError.into()),
+        }?;
 
         // Cleanup alarm callback.
         match timeout.stop_alarm() {
@@ -383,7 +380,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
                 if matches!(status, SendOrRecvStatus::Timeout) {
                     #[cfg(feature = "debug_ctap")]
                     writeln!(
-                    Console::writer(),
+                    Console::<S>::writer(),
                     "The send/receive timeout already expired, but the callback wasn't executed."
                 )
                     .unwrap();
@@ -401,7 +398,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         if matches!(status, SendOrRecvStatus::Timeout) {
             #[cfg(feature = "verbose_usb")]
             writeln!(
-                Console::writer(),
+                Console::<S>::writer(),
                 "Cancelling USB transaction due to timeout"
             )
             .unwrap();
@@ -416,15 +413,14 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
                     // The app should wait for it, but it may never happen if the remote app crashes.
                     // We just return to avoid a deadlock.
                     #[cfg(feature = "debug_ctap")]
-                    writeln!(Console::writer(), "Couldn't cancel the transaction").unwrap();
+                    writeln!(Console::<S>::writer(), "Couldn't cancel the transaction").unwrap();
                 }
                 Err(e) => panic!("Unexpected error when cancelling USB transaction: {:?}", e),
             }
             #[cfg(feature = "debug_ctap")]
-            writeln!(Console::writer(), "Cancelled USB transaction!").unwrap();
+            writeln!(Console::<S>::writer(), "Cancelled USB transaction!").unwrap();
         }
 
-        core::mem::drop(result_code);
         Ok(status)
     }
 }
