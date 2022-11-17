@@ -3,7 +3,7 @@
 use crate::util::Util;
 use core::cell::Cell;
 use core::convert::TryInto;
-use libtock_console::Config;
+//use libtock_console::Config;
 use libtock_platform as platform;
 use libtock_platform::{share, AllowRw, DefaultConfig, Subscribe, Syscalls};
 use platform::ErrorCode;
@@ -23,7 +23,12 @@ mod allow_nr {
     pub const SHARE_BUFFER: u32 = 0;
 }
 
-pub struct Rng<S: Syscalls, C: platform::subscribe::Config = DefaultConfig>(S, C);
+/// System call configuration trait for `Rng`
+pub trait Config: platform::allow_rw::Config + platform::subscribe::Config {}
+
+impl<T: platform::allow_rw::Config + platform::subscribe::Config> Config for T {}
+
+pub struct Rng<S: Syscalls, C: Config = DefaultConfig>(S, C);
 
 impl<S: Syscalls, C: Config> Rng<S, C> {
     pub fn fill_buffer(buf: &mut [u8]) -> bool {
