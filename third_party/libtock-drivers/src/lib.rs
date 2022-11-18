@@ -12,6 +12,5 @@ pub mod crp;
 pub mod result;
 pub mod rng;
 pub mod timer;
-// TODO: backport `usb_ctap_hid`
 pub mod usb_ctap_hid;
 pub mod util;

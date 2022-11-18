@@ -232,14 +232,16 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
         share::scope::<
             (
-                AllowRo<_, DRIVER_NUMBER, { allow_nr::RECEIVE }>,
+                AllowRw<_, DRIVER_NUMBER, { allow_nr::RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::RECEIVE }>,
             ),
             _,
             _,
         >(|handle| {
             let (allow, subscribe) = handle.split();
-            S::allow_ro::<C, DRIVER_NUMBER, { allow_nr::RECEIVE }>(allow, buf)?;
+            // we need to share a *read-write* buffer with the kernel because it needs
+            // to copy the packet into the buffer
+            S::allow_rw::<C, DRIVER_NUMBER, { allow_nr::RECEIVE }>(allow, buf)?;
 
             // register the usb endpoint listener
             Self::register_listener::<{ subscribe_nr::RECEIVE }, _>(&alarm, subscribe)?;
@@ -334,7 +336,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
         share::scope::<
             (
-                AllowRw<_, DRIVER_NUMBER, { allow_nr::TRANSMIT_OR_RECEIVE }>,
+                AllowRo<_, DRIVER_NUMBER, { allow_nr::TRANSMIT_OR_RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::TRANSMIT_OR_RECEIVE }>,
             ),
             _,
@@ -342,7 +344,8 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         >(|handle| {
             let (allow, subscribe) = handle.split();
 
-            S::allow_rw::<C, DRIVER_NUMBER, { allow_nr::TRANSMIT_OR_RECEIVE }>(allow, buf)?;
+            // receiving a packet alone does *not* require sharing a rw-buffer with the kernel
+            S::allow_ro::<C, DRIVER_NUMBER, { allow_nr::TRANSMIT_OR_RECEIVE }>(allow, buf)?;
 
             Self::register_listener::<{ subscribe_nr::TRANSMIT_OR_RECEIVE }, _>(&alarm, subscribe)?;
 
