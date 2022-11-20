@@ -30,6 +30,7 @@ use platform::{AllowRo, AllowRw, Subscribe, Upcall};
 
 const DRIVER_NUMBER: u32 = 0x20009;
 
+/// Ids for commands
 mod command_nr {
     pub const CHECK: u32 = 0;
     pub const CONNECT: u32 = 1;
@@ -39,20 +40,24 @@ mod command_nr {
     pub const CANCEL: u32 = 5;
 }
 
+/// Ids for subscribe numbers
 mod subscribe_nr {
-    pub const _TRANSMIT: u32 = 1;
-    pub const RECEIVE: u32 = 2;
-    pub const TRANSMIT_OR_RECEIVE: u32 = 3;
+    pub const _TRANSMIT: u32 = 0;
+    pub const RECEIVE: u32 = 1;
+    pub const TRANSMIT_OR_RECEIVE: u32 = 2;
     pub mod callback_status {
-        pub const TRANSMITTED: u32 = 1;
-        pub const RECEIVED: u32 = 2;
+        pub const TRANSMITTED: u32 = super::_TRANSMIT;
+        pub const RECEIVED: u32 = super::RECEIVE;
     }
 }
 
-mod allow_nr {
-    pub const _TRANSMIT: u32 = 1;
-    pub const RECEIVE: u32 = 2;
-    pub const TRANSMIT_OR_RECEIVE: u32 = 3;
+mod ro_allow_nr {
+    pub const _TRANSMIT: u32 = 0;
+    pub const TRANSMIT_OR_RECEIVE: u32 = 1;
+}
+
+mod rw_allow_nr {
+    pub const RECEIVE: u32 = 0;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,7 +237,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
         share::scope::<
             (
-                AllowRw<_, DRIVER_NUMBER, { allow_nr::RECEIVE }>,
+                AllowRw<_, DRIVER_NUMBER, { rw_allow_nr::RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::RECEIVE }>,
             ),
             _,
@@ -241,7 +246,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             let (allow, subscribe) = handle.split();
             // we need to share a *read-write* buffer with the kernel because it needs
             // to copy the packet into the buffer
-            S::allow_rw::<C, DRIVER_NUMBER, { allow_nr::RECEIVE }>(allow, buf)?;
+            S::allow_rw::<C, DRIVER_NUMBER, { rw_allow_nr::RECEIVE }>(allow, buf)?;
 
             // register the usb endpoint listener
             Self::register_listener::<{ subscribe_nr::RECEIVE }, _>(&alarm, subscribe)?;
@@ -259,7 +264,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         S::command(DRIVER_NUMBER, command_nr::RECEIVE, 0, 0).to_result::<u32, ErrorCode>()?;
 
         Util::<S>::yieldk_for(|| status.get().is_some());
-        Self::unregister_listener(allow_nr::RECEIVE);
+        Self::unregister_listener(subscribe_nr::RECEIVE);
 
         // do proper error handling
         let status = match status.get() {
@@ -336,7 +341,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
         share::scope::<
             (
-                AllowRo<_, DRIVER_NUMBER, { allow_nr::TRANSMIT_OR_RECEIVE }>,
+                AllowRo<_, DRIVER_NUMBER, { ro_allow_nr::TRANSMIT_OR_RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::TRANSMIT_OR_RECEIVE }>,
             ),
             _,
@@ -345,7 +350,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             let (allow, subscribe) = handle.split();
 
             // receiving a packet alone does *not* require sharing a rw-buffer with the kernel
-            S::allow_ro::<C, DRIVER_NUMBER, { allow_nr::TRANSMIT_OR_RECEIVE }>(allow, buf)?;
+            S::allow_ro::<C, DRIVER_NUMBER, { ro_allow_nr::TRANSMIT_OR_RECEIVE }>(allow, buf)?;
 
             Self::register_listener::<{ subscribe_nr::TRANSMIT_OR_RECEIVE }, _>(&alarm, subscribe)?;
 
