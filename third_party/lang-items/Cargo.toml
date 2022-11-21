@@ -8,13 +8,15 @@ authors = [
 license = "MIT/Apache-2.0"
 edition = "2018"
 
-[dependencies]
-libtock_drivers = { path = "../libtock-drivers" }
-libtock_platform = { path = "../../third_party/libtock-rs/platform" }
+[target.'cfg(any(target_arch = "arm", target_arch = "riscv32"))'.dependencies]
 libtock_runtime = { path = "../../third_party/libtock-rs/runtime", default-features = false, features = [
   "no_auto_layout",
   "no_debug_memop",
 ] }
+
+[dependencies]
+libtock_drivers = { path = "../libtock-drivers" }
+libtock_platform = { path = "../../third_party/libtock-rs/platform" }
 libtock_low_level_debug = { path = "../../third_party/libtock-rs/apis/low_level_debug" }
 libtock_leds = { path = "../../third_party/libtock-rs/apis/leds" }
 libtock_console = { path = "../../third_party/libtock-rs/apis/console" }
