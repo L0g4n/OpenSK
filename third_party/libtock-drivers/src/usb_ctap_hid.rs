@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use crate::result::{OutOfRangeError, TockError, TockResult};
+use crate::timer::Duration;
 use crate::util::Util;
 use crate::{timer, util};
 use core::cell::Cell;
 use core::convert::TryFrom;
 #[cfg(feature = "debug_ctap")]
 use core::fmt::Write;
-use core::time::Duration;
 #[cfg(feature = "debug_ctap")]
 use libtock_console::Console;
 use libtock_platform as platform;
@@ -149,13 +149,13 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
     #[allow(clippy::let_and_return)]
     pub fn recv_with_timeout(
         buf: &mut [u8; 64],
-        timeout_delay: Duration,
+        timeout_delay: Duration<isize>,
     ) -> TockResult<SendOrRecvStatus> {
         #[cfg(feature = "verbose_usb")]
         writeln!(
             Console::<S>::writer(),
             "Receiving packet with timeout of {}ms",
-            timeout_delay.as_millis(),
+            timeout_delay.ms(),
         )
         .unwrap();
 
@@ -190,14 +190,14 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
     #[allow(clippy::let_and_return)]
     pub fn send_or_recv_with_timeout(
         buf: &mut [u8; 64],
-        timeout_delay: Duration,
+        timeout_delay: Duration<isize>,
         endpoint: UsbEndpoint,
     ) -> TockResult<SendOrRecvStatus> {
         #[cfg(feature = "verbose_usb")]
         writeln!(
             Console::<S>::writer(),
             "Sending packet with timeout of {}ms = {:02x?}",
-            timeout_delay.as_millis(),
+            timeout_delay.ms(),
             buf as &[u8]
         )
         .unwrap();
@@ -220,7 +220,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
     fn recv_with_timeout_detail(
         buf: &mut [u8; 64],
-        timeout_delay: Duration,
+        timeout_delay: Duration<isize>,
     ) -> TockResult<SendOrRecvStatus> {
         let status: Cell<Option<SendOrRecvStatus>> = Cell::new(None);
 
@@ -323,7 +323,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
     fn send_or_recv_with_timeout_detail(
         buf: &mut [u8; 64],
-        timeout_delay: Duration,
+        timeout_delay: Duration<isize>,
         endpoint: UsbEndpoint,
     ) -> TockResult<SendOrRecvStatus> {
         let status: Cell<Option<SendOrRecvStatus>> = Cell::new(None);
