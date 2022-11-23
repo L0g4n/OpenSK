@@ -9,14 +9,24 @@ authors = [
 license = "Apache-2.0"
 edition = "2018"
 
+[target.'cfg(any(target_arch = "arm", target_arch = "riscv32"))'.dependencies]
+libtock_runtime = { path = "third_party/libtock-rs/runtime", default-features = false, features = [
+  "no_auto_layout",
+  "no_debug_memop",
+] }
+
 [dependencies]
+libtock_buttons = { path = "third_party/libtock-rs/apis/buttons" }
 libtock_platform = { path = "third_party/libtock-rs/platform" }
 libtock_drivers = { path = "third_party/libtock-drivers" }
+libtock_console = { path = "third_party/libtock-rs/apis/console" }
+libtock_leds = { path = "third_party/libtock-rs/apis/leds" }
 lang_items = { path = "third_party/lang-items" }
 sk-cbor = { path = "libraries/cbor" }
 crypto = { path = "libraries/crypto" }
 rng256 = { path = "libraries/rng256" }
 persistent_store = { path = "libraries/persistent_store" }
+libtock_unittest = { path = "third_party/libtock-rs/unittest", optional = true }
 byteorder = { version = "1", default-features = false }
 arrayref = "0.3.6"
 subtle = { version = "2.2", default-features = false, features = ["nightly"] }
@@ -35,6 +45,7 @@ std = [
   "persistent_store/std",
   "rng256/std",
   "rand",
+  "libtock_unittest",
 ]
 verbose = ["debug_ctap", "libtock_drivers/verbose_usb"]
 with_ctap1 = ["crypto/with_ctap1"]

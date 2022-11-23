@@ -25,13 +25,13 @@ use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_time::duration::Milliseconds;
 use embedded_time::fixed_point::FixedPoint;
-use libtock_core::result::{CommandError, EALREADY};
-use libtock_drivers::buttons::{self, ButtonState};
-use libtock_drivers::console::Console;
+use libtock_console::{Console, ConsoleWriter};
 use libtock_drivers::result::{FlexUnwrap, TockError};
 use libtock_drivers::timer::Duration;
-use libtock_drivers::usb_ctap_hid::{self, UsbEndpoint};
-use libtock_drivers::{crp, led, timer};
+use libtock_drivers::usb_ctap_hid::{self, UsbCtapHid, UsbEndpoint};
+use libtock_drivers::{crp, timer};
+use libtock_leds::Leds;
+use libtock_platform::{CommandReturn, ErrorCode, Syscalls};
 use persistent_store::{StorageResult, Store};
 use rng256::TockRng256;
 
@@ -47,9 +47,9 @@ impl HidConnection for TockHidConnection {
         buf: &mut [u8; 64],
         timeout: Milliseconds<ClockInt>,
     ) -> SendOrRecvResult {
-        match usb_ctap_hid::send_or_recv_with_timeout(
+        match UsbCtapHid::send_or_recv_with_timeout(
             buf,
-            timer::Duration::from_ms(timeout.integer() as isize),
+            Duration::from_ms(timeout.integer() as isize),
             self.endpoint,
         ) {
             Ok(usb_ctap_hid::SendOrRecvStatus::Timeout) => Ok(SendOrRecvStatus::Timeout),
@@ -62,8 +62,8 @@ impl HidConnection for TockHidConnection {
     }
 }
 
-pub struct TockEnv {
-    rng: TockRng256,
+pub struct TockEnv<S: Syscalls> {
+    rng: TockRng256<S>,
     store: Store<TockStorage>,
     upgrade_storage: Option<TockUpgradeStorage>,
     main_connection: TockHidConnection,
@@ -72,7 +72,7 @@ pub struct TockEnv {
     blink_pattern: usize,
 }
 
-impl TockEnv {
+impl<S: Syscalls> TockEnv<S> {
     /// Returns the unique instance of the Tock environment.
     ///
     /// # Panics
@@ -84,7 +84,7 @@ impl TockEnv {
         let store = Store::new(storage).ok().unwrap();
         let upgrade_storage = TockUpgradeStorage::new().ok();
         TockEnv {
-            rng: TockRng256 {},
+            rng: TockRng256::<S>,
             store,
             upgrade_storage,
             main_connection: TockHidConnection {
@@ -111,7 +111,7 @@ pub fn take_storage() -> StorageResult<TockStorage> {
     TockStorage::new()
 }
 
-impl UserPresence for TockEnv {
+impl<S: Syscalls> UserPresence for TockEnv<S> {
     fn check_init(&mut self) {
         self.blink_pattern = 0;
     }
@@ -145,15 +145,14 @@ impl UserPresence for TockEnv {
             .flex_unwrap();
 
         // Wait for a button touch or an alarm.
-        libtock_drivers::util::yieldk_for(|| button_touched.get() || keepalive_expired.get());
+        libtock_drivers::util::Util::<S>::yieldk_for(|| {
+            button_touched.get() || keepalive_expired.get()
+        });
 
         // Cleanup alarm callback.
-        match keepalive.stop_alarm(keepalive_alarm) {
+        match keepalive.stop_alarm() {
             Ok(()) => (),
-            Err(TockError::Command(CommandError {
-                return_code: EALREADY,
-                ..
-            })) => assert!(keepalive_expired.get()),
+            Err(TockError::Command(ErrorCode::Already)) => assert!(keepalive_expired.get()),
             Err(_e) => {
                 #[cfg(feature = "debug_ctap")]
                 panic!("Unexpected error when stopping alarm: {:?}", _e);
@@ -176,26 +175,22 @@ impl UserPresence for TockEnv {
     }
 
     fn check_complete(&mut self) {
-        switch_off_leds();
+        switch_off_leds::<S>();
     }
 }
 
-impl FirmwareProtection for TockEnv {
+impl<S: Syscalls> FirmwareProtection for TockEnv<S> {
     fn lock(&mut self) -> bool {
         matches!(
-            crp::set_protection(crp::ProtectionLevel::FullyLocked),
-            Ok(())
-                | Err(TockError::Command(CommandError {
-                    return_code: EALREADY,
-                    ..
-                }))
+            crp::Crp::<S>::set_protection(crp::ProtectionLevel::FullyLocked),
+            Ok(()) | Err(TockError::Command(ErrorCode::Already))
         )
     }
 }
 
-impl key_store::Helper for TockEnv {}
+impl<S: Syscalls> key_store::Helper for TockEnv<S> {}
 
-impl AttestationStore for TockEnv {
+impl<S: Syscalls> AttestationStore for TockEnv<S> {
     fn get(
         &mut self,
         id: &attestation_store::Id,
@@ -218,15 +213,15 @@ impl AttestationStore for TockEnv {
     }
 }
 
-impl Env for TockEnv {
-    type Rng = TockRng256;
+impl<S: Syscalls> Env for TockEnv<S> {
+    type Rng = TockRng256<S>;
     type UserPresence = Self;
     type Storage = TockStorage;
     type KeyStore = Self;
     type AttestationStore = Self;
     type UpgradeStorage = TockUpgradeStorage;
     type FirmwareProtection = Self;
-    type Write = Console;
+    type Write = ConsoleWriter<S>;
     type Customization = CustomizationImpl;
     type HidConnection = TockHidConnection;
 
@@ -259,7 +254,7 @@ impl Env for TockEnv {
     }
 
     fn write(&mut self) -> Self::Write {
-        Console::new()
+        Console::<S>::writer()
     }
 
     fn customization(&self) -> &Self::Customization {
@@ -276,17 +271,17 @@ impl Env for TockEnv {
     }
 }
 
-pub fn blink_leds(pattern_seed: usize) {
-    for l in 0..led::count().flex_unwrap() {
-        if (pattern_seed ^ l).count_ones() & 1 != 0 {
-            led::get(l).flex_unwrap().on().flex_unwrap();
+pub fn blink_leds<S: Syscalls>(pattern_seed: usize) {
+    for l in 0..Leds::<S>::count().unwrap() {
+        if (pattern_seed ^ l as usize).count_ones() & 1 != 0 {
+            Leds::<S>::on(l as u32).unwrap();
         } else {
-            led::get(l).flex_unwrap().off().flex_unwrap();
+            Leds::<S>::off(l as u32).unwrap();
         }
     }
 }
 
-pub fn wink_leds(pattern_seed: usize) {
+pub fn wink_leds<S: Syscalls>(pattern_seed: usize) {
     // This generates a "snake" pattern circling through the LEDs.
     // Fox example with 4 LEDs the sequence of lit LEDs will be the following.
     // 0 1 2 3
@@ -299,7 +294,7 @@ pub fn wink_leds(pattern_seed: usize) {
     // *     *
     // * *   *
     // * *
-    let count = led::count().flex_unwrap();
+    let count = Leds::<S>::count().unwrap() as usize;
     let a = (pattern_seed / 2) % count;
     let b = ((pattern_seed + 1) / 2) % count;
     let c = ((pattern_seed + 3) / 2) % count;
@@ -312,16 +307,17 @@ pub fn wink_leds(pattern_seed: usize) {
             _ => l,
         };
         if k == a || k == b || k == c {
-            led::get(l).flex_unwrap().on().flex_unwrap();
+            Leds::<S>::on(l as u32).unwrap();
         } else {
-            led::get(l).flex_unwrap().off().flex_unwrap();
+            Leds::<S>::off(l as u32).unwrap();
         }
     }
 }
 
-pub fn switch_off_leds() {
-    for l in 0..led::count().flex_unwrap() {
-        led::get(l).flex_unwrap().off().flex_unwrap();
+pub fn switch_off_leds<S: Syscalls>() {
+    let count = Leds::<S>::count().unwrap();
+    for l in 0..count {
+        Leds::<S>::off(l).unwrap();
     }
 }
 

@@ -19,35 +19,38 @@ use alloc::vec::Vec;
 use arrayref::array_ref;
 use byteorder::{ByteOrder, LittleEndian};
 use core::cell::Cell;
+use core::convert::TryInto;
 use crypto::sha256::Sha256;
 use crypto::{ecdsa, Hash256};
-use libtock_core::{callback, syscalls};
+use libtock_platform as platform;
+use libtock_platform::{syscall_class, ErrorCode, RawSyscalls, Syscalls};
 use persistent_store::{Storage, StorageError, StorageIndex, StorageResult};
+use platform::share;
 
-const DRIVER_NUMBER: usize = 0x50003;
-const METADATA_SIGN_OFFSET: usize = 0x800;
+const DRIVER_NUMBER: u32 = 0x50003;
+const METADATA_SIGN_OFFSET: u32 = 0x800;
 
 const UPGRADE_PUBLIC_KEY: &[u8; 65] =
     include_bytes!(concat!(env!("OUT_DIR"), "/opensk_upgrade_pubkey.bin"));
 
 mod subscribe_nr {
-    pub const DONE: usize = 0;
+    pub const DONE: u32 = 0;
 }
 
 mod command_nr {
-    pub const GET_INFO: usize = 1;
+    pub const GET_INFO: u32 = 1;
     pub mod get_info_nr {
-        pub const WORD_SIZE: usize = 0;
-        pub const PAGE_SIZE: usize = 1;
-        pub const MAX_WORD_WRITES: usize = 2;
-        pub const MAX_PAGE_ERASES: usize = 3;
+        pub const WORD_SIZE: u32 = 0;
+        pub const PAGE_SIZE: u32 = 1;
+        pub const MAX_WORD_WRITES: u32 = 2;
+        pub const MAX_PAGE_ERASES: u32 = 3;
     }
-    pub const WRITE_SLICE: usize = 2;
-    pub const ERASE_PAGE: usize = 3;
+    pub const WRITE_SLICE: u32 = 2;
+    pub const ERASE_PAGE: u32 = 3;
 }
 
-mod allow_nr {
-    pub const WRITE_SLICE: usize = 0;
+mod ro_allow_nr {
+    pub const WRITE_SLICE: u32 = 0;
 }
 
 mod memop_nr {
@@ -58,43 +61,52 @@ mod memop_nr {
 }
 
 mod storage_type {
-    pub const STORE: usize = 1;
-    pub const PARTITION: usize = 2;
+    pub const STORE: u32 = 1;
+    pub const PARTITION: u32 = 2;
 }
 
-fn get_info(nr: usize, arg: usize) -> StorageResult<usize> {
-    let code = syscalls::command(DRIVER_NUMBER, command_nr::GET_INFO, nr, arg);
+fn get_info<S: Syscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
+    let code =
+        S::command(DRIVER_NUMBER, command_nr::GET_INFO, nr, arg).to_result::<u32, ErrorCode>();
     code.map_err(|_| StorageError::CustomError)
 }
 
-fn memop(nr: u32, arg: usize) -> StorageResult<usize> {
-    let code = unsafe { syscalls::raw::memop(nr, arg) };
+fn memop<S: RawSyscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
+    let code = unsafe {
+        S::syscall2::<{ syscall_class::MEMOP }>([nr.into(), arg.into()])[0]
+            .try_into()
+            .unwrap()
+    };
     if code < 0 {
         Err(StorageError::CustomError)
     } else {
-        Ok(code as usize)
+        Ok(code)
     }
 }
 
-fn block_command(driver: usize, cmd: usize, arg1: usize, arg2: usize) -> StorageResult<()> {
-    let done = Cell::new(None);
-    let mut alarm = |status| done.set(Some(status));
-    let subscription = syscalls::subscribe::<callback::Identity1Consumer, _>(
-        DRIVER_NUMBER,
-        subscribe_nr::DONE,
-        &mut alarm,
-    );
+fn block_command<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config>(
+    driver: u32,
+    cmd: u32,
+    arg1: u32,
+    arg2: u32,
+) -> StorageResult<()> {
+    let called: Cell<Option<(u32,)>> = Cell::new(None);
+
+    let subscription = share::scope(|subscribe| {
+        S::subscribe::<_, _, C, DRIVER_NUMBER, { subscribe_nr::DONE }>(subscribe, &called)
+    });
+
     if subscription.is_err() {
         return Err(StorageError::CustomError);
     }
 
-    let code = syscalls::command(driver, cmd, arg1, arg2);
+    let code = S::command(driver, cmd, arg1, arg2).to_result::<u32, ErrorCode>();
     if code.is_err() {
         return Err(StorageError::CustomError);
     }
 
-    libtock_drivers::util::yieldk_for(|| done.get().is_some());
-    if done.get().unwrap() == 0 {
+    libtock_drivers::util::Util::<S>::yieldk_for(|| called.get().is_some());
+    if called.get().unwrap().0 == 0 {
         Ok(())
     } else {
         Err(StorageError::CustomError)
@@ -105,29 +117,38 @@ unsafe fn read_slice(address: usize, length: usize) -> &'static [u8] {
     core::slice::from_raw_parts(address as *const u8, length)
 }
 
-fn write_slice(ptr: usize, value: &[u8]) -> StorageResult<()> {
-    let code = unsafe {
-        syscalls::raw::allow(
-            DRIVER_NUMBER,
-            allow_nr::WRITE_SLICE,
-            // We rely on the driver not writing to the slice. This should use read-only allow
-            // when available. See https://github.com/tock/tock/issues/1274.
-            value.as_ptr() as *mut u8,
-            value.len(),
-        )
-    };
-    if code < 0 {
+fn write_slice<S: Syscalls, C: platform::allow_ro::Config + platform::subscribe::Config>(
+    ptr: usize,
+    value: &[u8],
+) -> StorageResult<()> {
+    let result = share::scope(|allow_ro| {
+        S::allow_ro::<C, DRIVER_NUMBER, { ro_allow_nr::WRITE_SLICE }>(allow_ro, value)
+    });
+    if result.is_err() {
         return Err(StorageError::CustomError);
     }
 
-    block_command(DRIVER_NUMBER, command_nr::WRITE_SLICE, ptr, value.len())
+    block_command::<S, C>(
+        DRIVER_NUMBER,
+        command_nr::WRITE_SLICE,
+        ptr as u32,
+        value.len() as u32,
+    )
 }
 
-fn erase_page(ptr: usize, page_length: usize) -> StorageResult<()> {
-    block_command(DRIVER_NUMBER, command_nr::ERASE_PAGE, ptr, page_length)
+fn erase_page<S: Syscalls, C: platform::allow_ro::Config + platform::subscribe::Config>(
+    ptr: usize,
+    page_length: usize,
+) -> StorageResult<()> {
+    block_command::<S, C>(
+        DRIVER_NUMBER,
+        command_nr::ERASE_PAGE,
+        ptr as u32,
+        page_length as u32,
+    )
 }
 
-pub struct TockStorage {
+pub struct TockStorage<S: Syscalls> {
     word_size: usize,
     page_size: usize,
     num_pages: usize,
@@ -136,7 +157,7 @@ pub struct TockStorage {
     storage_locations: Vec<&'static [u8]>,
 }
 
-impl TockStorage {
+impl<S: Syscalls> TockStorage<S> {
     /// Provides access to the embedded flash if available.
     ///
     /// # Errors
@@ -146,13 +167,13 @@ impl TockStorage {
     /// - The page size is a power of two.
     /// - The page size is a multiple of the word size.
     /// - The storage is page-aligned.
-    pub fn new() -> StorageResult<TockStorage> {
+    pub fn new() -> StorageResult<TockStorage<S>> {
         let mut syscall = TockStorage {
-            word_size: get_info(command_nr::get_info_nr::WORD_SIZE, 0)?,
-            page_size: get_info(command_nr::get_info_nr::PAGE_SIZE, 0)?,
+            word_size: get_info(command_nr::get_info_nr::WORD_SIZE, 0)? as usize,
+            page_size: get_info(command_nr::get_info_nr::PAGE_SIZE, 0)? as usize,
             num_pages: 0,
-            max_word_writes: get_info(command_nr::get_info_nr::MAX_WORD_WRITES, 0)?,
-            max_page_erases: get_info(command_nr::get_info_nr::MAX_PAGE_ERASES, 0)?,
+            max_word_writes: get_info(command_nr::get_info_nr::MAX_WORD_WRITES, 0)? as usize,
+            max_page_erases: get_info(command_nr::get_info_nr::MAX_PAGE_ERASES, 0)? as usize,
             storage_locations: Vec::new(),
         };
         if !syscall.word_size.is_power_of_two()
@@ -165,8 +186,8 @@ impl TockStorage {
             if memop(memop_nr::STORAGE_TYPE, i)? != storage_type::STORE {
                 continue;
             }
-            let storage_ptr = memop(memop_nr::STORAGE_PTR, i)?;
-            let storage_len = memop(memop_nr::STORAGE_LEN, i)?;
+            let storage_ptr = memop(memop_nr::STORAGE_PTR, i)? as usize;
+            let storage_len = memop(memop_nr::STORAGE_LEN, i)? as usize;
             if !syscall.is_page_aligned(storage_ptr) || !syscall.is_page_aligned(storage_len) {
                 return Err(StorageError::CustomError);
             }
@@ -187,7 +208,7 @@ impl TockStorage {
     }
 }
 
-impl Storage for TockStorage {
+impl<S: Syscalls> Storage for TockStorage<S> {
     fn word_size(&self) -> usize {
         self.word_size
     }
