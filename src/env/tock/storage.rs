@@ -20,6 +20,7 @@ use arrayref::array_ref;
 use byteorder::{ByteOrder, LittleEndian};
 use core::cell::Cell;
 use core::convert::TryInto;
+use core::marker::PhantomData;
 use crypto::sha256::Sha256;
 use crypto::{ecdsa, Hash256};
 use libtock_platform as platform;
@@ -28,7 +29,7 @@ use persistent_store::{Storage, StorageError, StorageIndex, StorageResult};
 use platform::share;
 
 const DRIVER_NUMBER: u32 = 0x50003;
-const METADATA_SIGN_OFFSET: u32 = 0x800;
+const METADATA_SIGN_OFFSET: usize = 0x800;
 
 const UPGRADE_PUBLIC_KEY: &[u8; 65] =
     include_bytes!(concat!(env!("OUT_DIR"), "/opensk_upgrade_pubkey.bin"));
@@ -148,16 +149,18 @@ fn erase_page<S: Syscalls, C: platform::allow_ro::Config + platform::subscribe::
     )
 }
 
-pub struct TockStorage<S: Syscalls> {
+pub struct TockStorage<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config> {
     word_size: usize,
     page_size: usize,
     num_pages: usize,
     max_word_writes: usize,
     max_page_erases: usize,
     storage_locations: Vec<&'static [u8]>,
+    _marker_s: PhantomData<S>,
+    _marker_c: PhantomData<C>,
 }
 
-impl<S: Syscalls> TockStorage<S> {
+impl<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config> TockStorage<S, C> {
     /// Provides access to the embedded flash if available.
     ///
     /// # Errors
@@ -167,14 +170,16 @@ impl<S: Syscalls> TockStorage<S> {
     /// - The page size is a power of two.
     /// - The page size is a multiple of the word size.
     /// - The storage is page-aligned.
-    pub fn new() -> StorageResult<TockStorage<S>> {
+    pub fn new() -> StorageResult<TockStorage<S, C>> {
         let mut syscall = TockStorage {
-            word_size: get_info(command_nr::get_info_nr::WORD_SIZE, 0)? as usize,
-            page_size: get_info(command_nr::get_info_nr::PAGE_SIZE, 0)? as usize,
+            word_size: get_info::<S>(command_nr::get_info_nr::WORD_SIZE, 0)? as usize,
+            page_size: get_info::<S>(command_nr::get_info_nr::PAGE_SIZE, 0)? as usize,
             num_pages: 0,
-            max_word_writes: get_info(command_nr::get_info_nr::MAX_WORD_WRITES, 0)? as usize,
-            max_page_erases: get_info(command_nr::get_info_nr::MAX_PAGE_ERASES, 0)? as usize,
+            max_word_writes: get_info::<S>(command_nr::get_info_nr::MAX_WORD_WRITES, 0)? as usize,
+            max_page_erases: get_info::<S>(command_nr::get_info_nr::MAX_PAGE_ERASES, 0)? as usize,
             storage_locations: Vec::new(),
+            _marker_s: PhantomData,
+            _marker_c: PhantomData,
         };
         if !syscall.word_size.is_power_of_two()
             || !syscall.page_size.is_power_of_two()
@@ -182,12 +187,12 @@ impl<S: Syscalls> TockStorage<S> {
         {
             return Err(StorageError::CustomError);
         }
-        for i in 0..memop(memop_nr::STORAGE_CNT, 0)? {
-            if memop(memop_nr::STORAGE_TYPE, i)? != storage_type::STORE {
+        for i in 0..memop::<S>(memop_nr::STORAGE_CNT, 0)? {
+            if memop::<S>(memop_nr::STORAGE_TYPE, i)? != storage_type::STORE {
                 continue;
             }
-            let storage_ptr = memop(memop_nr::STORAGE_PTR, i)? as usize;
-            let storage_len = memop(memop_nr::STORAGE_LEN, i)? as usize;
+            let storage_ptr = memop::<S>(memop_nr::STORAGE_PTR, i)? as usize;
+            let storage_len = memop::<S>(memop_nr::STORAGE_LEN, i)? as usize;
             if !syscall.is_page_aligned(storage_ptr) || !syscall.is_page_aligned(storage_len) {
                 return Err(StorageError::CustomError);
             }
@@ -208,7 +213,9 @@ impl<S: Syscalls> TockStorage<S> {
     }
 }
 
-impl<S: Syscalls> Storage for TockStorage<S> {
+impl<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config> Storage
+    for TockStorage<S, C>
+{
     fn word_size(&self) -> usize {
         self.word_size
     }
@@ -239,26 +246,35 @@ impl<S: Syscalls> Storage for TockStorage<S> {
             return Err(StorageError::NotAligned);
         }
         let ptr = self.read_slice(index, value.len())?.as_ptr() as usize;
-        write_slice(ptr, value)
+        write_slice::<S, C>(ptr, value)
     }
 
     fn erase_page(&mut self, page: usize) -> StorageResult<()> {
         let index = StorageIndex { page, byte: 0 };
         let length = self.page_size();
         let ptr = self.read_slice(index, length)?.as_ptr() as usize;
-        erase_page(ptr, length)
+        erase_page::<S, C>(ptr, length)
     }
 }
 
-pub struct TockUpgradeStorage {
+pub struct TockUpgradeStorage<
+    S: Syscalls,
+    C: platform::subscribe::Config + platform::allow_ro::Config,
+> {
     page_size: usize,
     partition: Partition,
     metadata: ModRange,
     running_metadata: ModRange,
     identifier: u32,
+    s: PhantomData<S>,
+    c: PhantomData<C>,
 }
 
-impl TockUpgradeStorage {
+impl<S, C> TockUpgradeStorage<S, C>
+where
+    S: Syscalls,
+    C: platform::allow_ro::Config + platform::subscribe::Config,
+{
     // Ideally, the kernel should tell us metadata and partitions directly.
     // This code only works for one layout, refactor this into the storage driver to support more.
     const METADATA_ADDRESS: usize = 0x4000;
@@ -279,25 +295,27 @@ impl TockUpgradeStorage {
     /// Returns a `NotAligned` error if partitions or metadata ranges are
     /// - not exclusive or,
     /// - not consecutive.
-    pub fn new() -> StorageResult<TockUpgradeStorage> {
+    pub fn new() -> StorageResult<TockUpgradeStorage<S, C>> {
         let mut locations = TockUpgradeStorage {
-            page_size: get_info(command_nr::get_info_nr::PAGE_SIZE, 0)?,
+            page_size: get_info::<S>(command_nr::get_info_nr::PAGE_SIZE, 0)? as usize,
             partition: Partition::new(),
             metadata: ModRange::new_empty(),
             running_metadata: ModRange::new_empty(),
             identifier: Self::PARTITION_ADDRESS_A as u32,
+            s: PhantomData,
+            c: PhantomData,
         };
         if !locations.page_size.is_power_of_two() {
             return Err(StorageError::CustomError);
         }
         let mut firmware_range = ModRange::new_empty();
-        for i in 0..memop(memop_nr::STORAGE_CNT, 0)? {
-            let storage_type = memop(memop_nr::STORAGE_TYPE, i)?;
+        for i in 0..memop::<S>(memop_nr::STORAGE_CNT, 0)? {
+            let storage_type = memop::<S>(memop_nr::STORAGE_TYPE, i)?;
             if !matches!(storage_type, storage_type::PARTITION) {
                 continue;
             };
-            let storage_ptr = memop(memop_nr::STORAGE_PTR, i)?;
-            let storage_len = memop(memop_nr::STORAGE_LEN, i)?;
+            let storage_ptr = memop::<S>(memop_nr::STORAGE_PTR, i)? as usize;
+            let storage_len = memop::<S>(memop_nr::STORAGE_LEN, i)? as usize;
             if !locations.is_page_aligned(storage_ptr) || !locations.is_page_aligned(storage_len) {
                 return Err(StorageError::CustomError);
             }
@@ -372,7 +390,11 @@ impl TockUpgradeStorage {
     }
 }
 
-impl UpgradeStorage for TockUpgradeStorage {
+impl<S, C> UpgradeStorage for TockUpgradeStorage<S, C>
+where
+    S: Syscalls,
+    C: platform::subscribe::Config + platform::allow_ro::Config,
+{
     fn write_bundle(&mut self, offset: usize, data: Vec<u8>) -> StorageResult<()> {
         if data.is_empty() {
             return Err(StorageError::OutOfBounds);
@@ -390,9 +412,9 @@ impl UpgradeStorage for TockUpgradeStorage {
         // Erases all pages that have their first byte in the write range.
         // Since we expect calls in order, we don't want to erase half-written pages.
         for address in write_range.aligned_iter(self.page_size) {
-            erase_page(address, self.page_size)?;
+            erase_page::<S, C>(address, self.page_size)?;
         }
-        write_slice(address, &data)?;
+        write_slice::<S, C>(address, &data)?;
         let written_slice = unsafe { read_slice(address, data.len()) };
         if written_slice != data {
             return Err(StorageError::CustomError);

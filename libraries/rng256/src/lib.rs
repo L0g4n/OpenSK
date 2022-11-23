@@ -14,6 +14,8 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use core::marker::PhantomData;
+
 use arrayref::array_ref;
 use libtock_drivers::rng::{self, Config};
 use libtock_platform::{DefaultConfig, Syscalls};
@@ -43,7 +45,19 @@ fn bytes_to_u32(bytes: [u8; 32]) -> [u32; 8] {
 }
 
 /// RNG backed by the TockOS rng driver.
-pub struct TockRng256<S: Syscalls, C: Config = DefaultConfig>(S, C);
+pub struct TockRng256<S: Syscalls, C: Config = DefaultConfig> {
+    _marker_s: PhantomData<S>,
+    _marker_c: PhantomData<C>,
+}
+
+impl<S: Syscalls, C: Config> TockRng256<S, C> {
+    pub fn new() -> Self {
+        Self {
+            _marker_s: PhantomData,
+            _marker_c: PhantomData,
+        }
+    }
+}
 
 impl<S: Syscalls, C: Config> Rng256 for TockRng256<S, C> {
     fn gen_uniform_u8x32(&mut self) -> [u8; 32] {

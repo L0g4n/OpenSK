@@ -22,6 +22,7 @@ use crate::api::{attestation_store, key_store};
 use crate::clock::{ClockInt, KEEPALIVE_DELAY_MS};
 use crate::env::Env;
 use core::cell::Cell;
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_time::duration::Milliseconds;
 use embedded_time::fixed_point::FixedPoint;
@@ -31,23 +32,26 @@ use libtock_drivers::timer::Duration;
 use libtock_drivers::usb_ctap_hid::{self, UsbCtapHid, UsbEndpoint};
 use libtock_drivers::{crp, timer};
 use libtock_leds::Leds;
-use libtock_platform::{CommandReturn, ErrorCode, Syscalls};
+use libtock_platform as platform;
+use libtock_platform::{ErrorCode, Syscalls};
 use persistent_store::{StorageResult, Store};
+use platform::DefaultConfig;
 use rng256::TockRng256;
 
 mod storage;
 
-pub struct TockHidConnection {
+pub struct TockHidConnection<S: Syscalls> {
     endpoint: UsbEndpoint,
+    s: PhantomData<S>,
 }
 
-impl HidConnection for TockHidConnection {
+impl<S: Syscalls> HidConnection for TockHidConnection<S> {
     fn send_and_maybe_recv(
         &mut self,
         buf: &mut [u8; 64],
         timeout: Milliseconds<ClockInt>,
     ) -> SendOrRecvResult {
-        match UsbCtapHid::send_or_recv_with_timeout(
+        match UsbCtapHid::<S>::send_or_recv_with_timeout(
             buf,
             Duration::from_ms(timeout.integer() as isize),
             self.endpoint,
@@ -62,13 +66,16 @@ impl HidConnection for TockHidConnection {
     }
 }
 
-pub struct TockEnv<S: Syscalls> {
+pub struct TockEnv<
+    S: Syscalls,
+    C: platform::subscribe::Config + platform::allow_ro::Config = DefaultConfig,
+> {
     rng: TockRng256<S>,
-    store: Store<TockStorage>,
-    upgrade_storage: Option<TockUpgradeStorage>,
-    main_connection: TockHidConnection,
+    store: Store<TockStorage<S, C>>,
+    upgrade_storage: Option<TockUpgradeStorage<S, C>>,
+    main_connection: TockHidConnection<S>,
     #[cfg(feature = "vendor_hid")]
-    vendor_connection: TockHidConnection,
+    vendor_connection: TockHidConnection<S>,
     blink_pattern: usize,
 }
 
@@ -84,15 +91,17 @@ impl<S: Syscalls> TockEnv<S> {
         let store = Store::new(storage).ok().unwrap();
         let upgrade_storage = TockUpgradeStorage::new().ok();
         TockEnv {
-            rng: TockRng256::<S>,
+            rng: TockRng256::new(),
             store,
             upgrade_storage,
             main_connection: TockHidConnection {
                 endpoint: UsbEndpoint::MainHid,
+                s: PhantomData,
             },
             #[cfg(feature = "vendor_hid")]
             vendor_connection: TockHidConnection {
                 endpoint: UsbEndpoint::VendorHid,
+                s: PhantomData,
             },
             blink_pattern: 0,
         }
@@ -104,14 +113,20 @@ impl<S: Syscalls> TockEnv<S> {
 /// # Panics
 ///
 /// - If called a second time.
-pub fn take_storage() -> StorageResult<TockStorage> {
+pub fn take_storage<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config>(
+) -> StorageResult<TockStorage<S, C>> {
     // Make sure the storage was not already taken.
     static TAKEN: AtomicBool = AtomicBool::new(false);
     assert!(!TAKEN.fetch_or(true, Ordering::SeqCst));
     TockStorage::new()
 }
 
-impl<S: Syscalls> UserPresence for TockEnv<S> {
+// FIXME: use new libtock_buttons crate
+impl<S, C> UserPresence for TockEnv<S, C>
+where
+    S: Syscalls,
+    C: platform::subscribe::Config + platform::allow_ro::Config,
+{
     fn check_init(&mut self) {
         self.blink_pattern = 0;
     }
@@ -179,7 +194,11 @@ impl<S: Syscalls> UserPresence for TockEnv<S> {
     }
 }
 
-impl<S: Syscalls> FirmwareProtection for TockEnv<S> {
+impl<S, C> FirmwareProtection for TockEnv<S, C>
+where
+    S: Syscalls,
+    C: platform::subscribe::Config + platform::allow_ro::Config,
+{
     fn lock(&mut self) -> bool {
         matches!(
             crp::Crp::<S>::set_protection(crp::ProtectionLevel::FullyLocked),
@@ -188,9 +207,18 @@ impl<S: Syscalls> FirmwareProtection for TockEnv<S> {
     }
 }
 
-impl<S: Syscalls> key_store::Helper for TockEnv<S> {}
+impl<S, C> key_store::Helper for TockEnv<S, C>
+where
+    S: Syscalls,
+    C: platform::allow_ro::Config + platform::subscribe::Config,
+{
+}
 
-impl<S: Syscalls> AttestationStore for TockEnv<S> {
+impl<S, C> AttestationStore for TockEnv<S, C>
+where
+    S: Syscalls,
+    C: platform::subscribe::Config + platform::allow_ro::Config,
+{
     fn get(
         &mut self,
         id: &attestation_store::Id,
@@ -213,17 +241,19 @@ impl<S: Syscalls> AttestationStore for TockEnv<S> {
     }
 }
 
-impl<S: Syscalls> Env for TockEnv<S> {
+impl<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config> Env
+    for TockEnv<S, C>
+{
     type Rng = TockRng256<S>;
     type UserPresence = Self;
-    type Storage = TockStorage;
+    type Storage = TockStorage<S, C>;
     type KeyStore = Self;
     type AttestationStore = Self;
-    type UpgradeStorage = TockUpgradeStorage;
+    type UpgradeStorage = TockUpgradeStorage<S, C>;
     type FirmwareProtection = Self;
     type Write = ConsoleWriter<S>;
     type Customization = CustomizationImpl;
-    type HidConnection = TockHidConnection;
+    type HidConnection = TockHidConnection<S>;
 
     fn rng(&mut self) -> &mut Self::Rng {
         &mut self.rng
