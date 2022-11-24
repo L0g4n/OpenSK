@@ -78,11 +78,8 @@ fn memop<S: RawSyscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
             .try_into()
             .unwrap()
     };
-    if code < 0 {
-        Err(StorageError::CustomError)
-    } else {
-        Ok(code)
-    }
+
+    Ok(code)
 }
 
 fn block_command<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config>(
@@ -422,7 +419,7 @@ where
         // Case: Last slice is written.
         if data.len() == self.partition.length() - offset {
             let metadata = unsafe { read_slice(self.metadata.start(), self.metadata.length()) };
-            self.check_partition_hash(&metadata)?;
+            self.check_partition_hash(metadata)?;
         }
         Ok(())
     }
@@ -528,7 +525,7 @@ mod test {
         LittleEndian::write_u32(&mut metadata[METADATA_SIGN_OFFSET + 8..][..4], 0x60000);
 
         let mut signed_over_data = metadata[METADATA_SIGN_OFFSET..].to_vec();
-        signed_over_data.extend(&[0xFF; 0x20000]);
+        signed_over_data.extend([0xFF; 0x20000]);
         let signed_hash = Sha256::hash(&signed_over_data);
 
         metadata[..32].copy_from_slice(&signed_hash);

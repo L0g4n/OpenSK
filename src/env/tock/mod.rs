@@ -26,6 +26,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_time::duration::Milliseconds;
 use embedded_time::fixed_point::FixedPoint;
+use libtock_buttons::{ButtonListener, ButtonState, Buttons};
 use libtock_console::{Console, ConsoleWriter};
 use libtock_drivers::result::{FlexUnwrap, TockError};
 use libtock_drivers::timer::Duration;
@@ -35,7 +36,7 @@ use libtock_leds::Leds;
 use libtock_platform as platform;
 use libtock_platform::{ErrorCode, Syscalls};
 use persistent_store::{StorageResult, Store};
-use platform::DefaultConfig;
+use platform::{share, DefaultConfig};
 use rng256::TockRng256;
 
 mod storage;
@@ -108,6 +109,12 @@ impl<S: Syscalls> TockEnv<S> {
     }
 }
 
+impl<S: Syscalls> Default for TockEnv<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Returns the unique storage instance.
 ///
 /// # Panics
@@ -134,28 +141,32 @@ where
         if timeout.integer() == 0 {
             return Err(UserPresenceError::Timeout);
         }
-        blink_leds(self.blink_pattern);
+        blink_leds::<S>(self.blink_pattern);
         self.blink_pattern += 1;
 
+        // enable interrupts for all buttons
+        let num_buttons = Buttons::<S>::count()?;
+        for n in 0..num_buttons {
+            Buttons::<S>::enable_interrupts(n)?;
+        }
+
         let button_touched = Cell::new(false);
-        let mut buttons_callback = buttons::with_callback(|_button_num, state| {
+        let button_listener = ButtonListener(|_button_num, state| {
             match state {
                 ButtonState::Pressed => button_touched.set(true),
                 ButtonState::Released => (),
             };
         });
-        let mut buttons = buttons_callback.init().flex_unwrap();
-        for mut button in &mut buttons {
-            button.enable().flex_unwrap();
-        }
+
+        share::scope(|subscribe| Buttons::<S>::register_listener(&button_listener, subscribe))?;
 
         // Setup a keep-alive callback.
         let keepalive_expired = Cell::new(false);
-        let mut keepalive_callback = timer::with_callback(|_, _| {
+        let mut keepalive_callback = timer::with_callback::<S, C, _>(|_| {
             keepalive_expired.set(true);
         });
         let mut keepalive = keepalive_callback.init().flex_unwrap();
-        let keepalive_alarm = keepalive
+        keepalive
             .set_alarm(timer::Duration::from_ms(timeout.integer() as isize))
             .flex_unwrap();
 
@@ -163,6 +174,12 @@ where
         libtock_drivers::util::Util::<S>::yieldk_for(|| {
             button_touched.get() || keepalive_expired.get()
         });
+
+        Buttons::<S>::unregister_listener();
+        // disable event interrupts for all buttons
+        for n in 0..num_buttons {
+            Buttons::<S>::disable_interrupts(n)?;
+        }
 
         // Cleanup alarm callback.
         match keepalive.stop_alarm() {
@@ -174,10 +191,6 @@ where
                 #[cfg(not(feature = "debug_ctap"))]
                 panic!("Unexpected error when stopping alarm: <error is only visible with the debug_ctap feature>");
             }
-        }
-
-        for mut button in &mut buttons {
-            button.disable().flex_unwrap();
         }
 
         if button_touched.get() {
@@ -304,9 +317,9 @@ impl<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config> E
 pub fn blink_leds<S: Syscalls>(pattern_seed: usize) {
     for l in 0..Leds::<S>::count().unwrap() {
         if (pattern_seed ^ l as usize).count_ones() & 1 != 0 {
-            Leds::<S>::on(l as u32).unwrap();
+            Leds::<S>::on(l).unwrap();
         } else {
-            Leds::<S>::off(l as u32).unwrap();
+            Leds::<S>::off(l).unwrap();
         }
     }
 }
