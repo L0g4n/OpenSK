@@ -128,7 +128,6 @@ pub fn take_storage<S: Syscalls, C: platform::subscribe::Config + platform::allo
     TockStorage::new()
 }
 
-// FIXME: use new libtock_buttons crate
 impl<S, C> UserPresence for TockEnv<S, C>
 where
     S: Syscalls,

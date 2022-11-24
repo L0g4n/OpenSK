@@ -18,13 +18,15 @@ use embedded_time::duration::Milliseconds;
 pub use embedded_time::Clock;
 #[cfg(not(feature = "std"))]
 use libtock_drivers::result::FlexUnwrap;
+#[cfg(not(feature = "std"))]
+use libtock_runtime::TockSyscalls;
 
 #[cfg(not(feature = "std"))]
-pub struct LibtockClock<const CLOCK_FREQUENCY: u32>(libtock_drivers::timer::Timer<'static>);
+pub struct LibtockClock<const CLOCK_FREQUENCY: u32>(libtock_drivers::timer::Timer<TockSyscalls>);
 #[cfg(not(feature = "std"))]
 impl<const CLOCK_FREQUENCY: u32> LibtockClock<CLOCK_FREQUENCY> {
     pub fn new() -> Self {
-        let boxed_cb = alloc::boxed::Box::new(libtock_drivers::timer::with_callback(|_, _| {}));
+        let boxed_cb = alloc::boxed::Box::new(libtock_drivers::timer::with_callback(|_| {}));
         let timer = alloc::boxed::Box::leak(boxed_cb).init().flex_unwrap();
         Self(timer)
     }
