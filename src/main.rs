@@ -47,16 +47,16 @@ use libtock_console::Console;
 use libtock_drivers::result::FlexUnwrap;
 use libtock_drivers::timer::Duration;
 use libtock_drivers::usb_ctap_hid;
-use libtock_platform::share;
-use libtock_runtime::TockSyscalls;
+use libtock_platform::{share, Syscalls};
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
+use libtock_runtime::{set_main, stack_size, TockSyscalls};
+#[cfg(feature = "std")]
+use libtock_unittest::fake;
 use usb_ctap_hid::UsbEndpoint;
 
-#[cfg(feature = "no_std")]
-use libtock_runtime::{set_main, stack_size, TockSyscalls};
-
-#[cfg(feature = "no_std")]
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 stack_size! {0x4000}
-#[cfg(feature = "no_std")]
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 set_main! {main}
 
 const SEND_TIMEOUT: Milliseconds<ClockInt> = Milliseconds(1000);
@@ -121,6 +121,7 @@ impl EndpointReplies {
         None
     }
 }
+
 fn main() {
     let clock = new_clock();
 
@@ -176,18 +177,18 @@ fn main() {
             match hid_connection.send_and_maybe_recv(&mut packet.packet, SEND_TIMEOUT) {
                 Ok(SendOrRecvStatus::Timeout) => {
                     #[cfg(feature = "debug_ctap")]
-                    print_packet_notice("Sending packet timed out", &clock);
+                    print_packet_notice::<TockSyscalls>("Sending packet timed out", &clock);
                     // TODO: reset the ctap_hid state.
                     // Since sending the packet timed out, we cancel this reply.
                     break;
                 }
                 Ok(SendOrRecvStatus::Sent) => {
                     #[cfg(feature = "debug_ctap")]
-                    print_packet_notice("Sent packet", &clock);
+                    print_packet_notice::<TockSyscalls>("Sent packet", &clock);
                 }
                 Ok(SendOrRecvStatus::Received(ep)) => {
                     #[cfg(feature = "debug_ctap")]
-                    print_packet_notice("Received another packet", &clock);
+                    print_packet_notice::<TockSyscalls>("Received another packet", &clock);
                     usb_endpoint = Some(ep);
 
                     // Copy to incoming packet to local buffer to be consistent
@@ -206,7 +207,7 @@ fn main() {
             {
                 usb_ctap_hid::SendOrRecvStatus::Received(endpoint) => {
                     #[cfg(feature = "debug_ctap")]
-                    print_packet_notice("Received packet", &clock);
+                    print_packet_notice::<TockSyscalls>("Received packet", &clock);
                     Some(endpoint)
                 }
                 usb_ctap_hid::SendOrRecvStatus::Sent => {
@@ -251,7 +252,7 @@ fn main() {
                         if ep.reply.has_data() {
                             #[cfg(feature = "debug_ctap")]
                             writeln!(
-                                Console::writer(),
+                                Console::<TockSyscalls>::writer(),
                                 "Warning overwriting existing reply for endpoint {}",
                                 endpoint as usize
                             )
@@ -297,13 +298,13 @@ fn main() {
 }
 
 #[cfg(feature = "debug_ctap")]
-fn print_packet_notice(notice_text: &str, clock: &CtapClock) {
+fn print_packet_notice<S: Syscalls>(notice_text: &str, clock: &CtapClock) {
     let now = clock.try_now().unwrap();
     let now_us = Microseconds::<u64>::try_from(now.duration_since_epoch())
         .unwrap()
         .0;
     writeln!(
-        Console::writer(),
+        Console::<S>::writer(),
         "{} at {}.{:06} s",
         notice_text,
         now_us / 1_000_000,
