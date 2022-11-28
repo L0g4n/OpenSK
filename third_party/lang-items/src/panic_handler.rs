@@ -5,7 +5,6 @@ use crate::util;
 use core::fmt::Write;
 #[cfg(feature = "panic_console")]
 use libtock_console::Console;
-use libtock_platform::{ErrorCode, Syscalls};
 use libtock_runtime::TockSyscalls;
 
 #[panic_handler]

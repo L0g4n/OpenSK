@@ -127,7 +127,6 @@ impl EndpointReplies {
     }
 }
 
-#[allow(unused)]
 fn main() {
     let clock = new_clock();
 
