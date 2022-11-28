@@ -47,7 +47,7 @@ use libtock_console::Console;
 use libtock_drivers::result::FlexUnwrap;
 use libtock_drivers::timer::Duration;
 use libtock_drivers::usb_ctap_hid;
-use libtock_platform::{share, Syscalls};
+use libtock_platform::share;
 #[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 use libtock_runtime::{set_main, stack_size, TockSyscalls};
 #[cfg(feature = "std")]
@@ -309,7 +309,7 @@ fn main() {
 }
 
 #[cfg(feature = "debug_ctap")]
-fn print_packet_notice<S: Syscalls>(notice_text: &str, clock: &CtapClock) {
+fn print_packet_notice<S: libtock_platform::Syscalls>(notice_text: &str, clock: &CtapClock) {
     let now = clock.try_now().unwrap();
     let now_us = Microseconds::<u64>::try_from(now.duration_since_epoch())
         .unwrap()
