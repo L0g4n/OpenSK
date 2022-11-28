@@ -18,6 +18,7 @@ impl<S: Syscalls, C: platform::subscribe::Config> Util<S, C> {
         LowLevelDebug::<S>::print_alert_code(AlertCode::WrongLocation);
     }
 
+    #[allow(dead_code)]
     pub fn flash_all_leds() -> ! {
         // Flash all LEDs (if available). All errors from syscalls are ignored: we are already inside a
         // panic handler so there is nothing much to do if simple drivers (timer, LEDs) don't work.
