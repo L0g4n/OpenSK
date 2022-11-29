@@ -502,9 +502,9 @@ class OpenSKInstaller:
     elf2tab_ver = self.checked_command_output(
         ["elf2tab/bin/elf2tab", "--version"]).split(
             "\n", maxsplit=1)[0]
-    if elf2tab_ver != "elf2tab 0.7.0":
-      error(("Detected unsupported elf2tab version {elf2tab_ver!a}. The "
-             "following commands may fail. Please use 0.7.0 instead."))
+    if elf2tab_ver != "elf2tab 0.10.2":
+      error(("Detected unsupported elf2tab version {elf2tab_ver}! The "
+             "following commands may fail. Please use 0.10.2 instead."))
     os.makedirs(self.tab_folder, exist_ok=True)
     tab_filename = os.path.join(self.tab_folder, f"{self.args.application}.tab")
     elf2tab_args = [
@@ -712,9 +712,12 @@ class OpenSKInstaller:
         fatal(("It seems that the TAB file was not produced for the "
                "architecture {board_props.arch}"))
       app_hex = intelhex.IntelHex()
+      tab_bytes = app_tab.extract_app(
+                board_props.arch).get_binary(board_props.app_address)
+      if tab_bytes is None:
+        fatal("The extracted bytes from the TAB file are none")
       app_hex.frombytes(
-          app_tab.extract_app(board_props.arch).get_binary(
-              board_props.app_address),
+          tab_bytes,
           offset=board_props.app_address)
       final_hex.merge(app_hex)
     info(f"Generating all-merged HEX file: {dest_file}")
@@ -722,9 +725,9 @@ class OpenSKInstaller:
 
   def check_prerequisites(self):
     """Checks versions of the used tools, exits on version mismatch."""
-    if not tockloader.__version__.startswith("1.5."):
+    if not tockloader.__version__.startswith("1.9."):
       fatal(("Your version of tockloader seems incompatible: found "
-             f"{tockloader.__version__}, expected 1.5.x."))
+             f"{tockloader.__version__}, expected 1.9.x."))
 
     if self.args.programmer == "jlink":
       assert_mandatory_binary("JLinkExe")

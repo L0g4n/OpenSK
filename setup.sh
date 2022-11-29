@@ -38,12 +38,12 @@ source tools/gen_key_materials.sh
 generate_crypto_materials N
 
 rustup show
-pip3 install --user --upgrade 'tockloader==1.5' six intelhex
+pip3 install --user --upgrade 'tockloader==1.9.0' six intelhex
 
 # Install dependency to create applications.
 mkdir -p elf2tab
 rustup install stable
-cargo +stable install elf2tab --version 0.7.0 --root elf2tab/
+cargo +stable install elf2tab --version 0.10.2 --root elf2tab/
 
 # Install python dependencies to factory configure OpenSK (crypto, JTAG lockdown)
 pip3 install --user --upgrade colorama tqdm cryptography "fido2>=1.0.0"
