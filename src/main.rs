@@ -130,6 +130,14 @@ impl EndpointReplies {
 fn main() {
     let clock = new_clock();
 
+    #[cfg(feature = "debug_ctap")]
+    writeln!(
+        Console::<SyscallImplementation>::writer(),
+        "Hello, World from ctap2!"
+    )
+    .ok()
+    .unwrap();
+
     // Setup USB driver.
     if !usb_ctap_hid::UsbCtapHid::<SyscallImplementation>::setup() {
         panic!("Cannot setup USB driver");
