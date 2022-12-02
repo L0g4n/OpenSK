@@ -23,7 +23,6 @@ use crate::clock::{ClockInt, KEEPALIVE_DELAY_MS};
 use crate::env::Env;
 use core::cell::Cell;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_time::duration::Milliseconds;
 use embedded_time::fixed_point::FixedPoint;
 use libtock_buttons::{ButtonListener, ButtonState, Buttons};
@@ -123,8 +122,20 @@ impl<S: Syscalls> Default for TockEnv<S> {
 pub fn take_storage<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config>(
 ) -> StorageResult<TockStorage<S, C>> {
     // Make sure the storage was not already taken.
-    static TAKEN: AtomicBool = AtomicBool::new(false);
-    assert!(!TAKEN.fetch_or(true, Ordering::SeqCst));
+    #[cfg(not(target_arch = "riscv32"))]
+    {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        assert!(!TAKEN.fetch_or(true, Ordering::SeqCst));
+    }
+    #[cfg(target_arch = "riscv32")]
+    {
+        static mut TAKEN: bool = false;
+        assert!(unsafe { !TAKEN });
+        unsafe {
+            TAKEN = true;
+        }
+    }
     TockStorage::new()
 }
 
