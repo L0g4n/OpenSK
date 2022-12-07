@@ -133,7 +133,7 @@ pub fn take_storage<S: Syscalls, C: platform::subscribe::Config + platform::allo
         static mut TAKEN: bool = false;
         /// Safety
         ///
-        /// We can not use an AtomicBool on platforms that do not support,
+        /// We can not use an AtomicBool on platforms that do not support atomics,
         /// such as the whole `riscv32i[mc]` family like OpenTitan.
         /// Thus, we need to use a mutable static variable which are unsafe
         /// cause they could cause a data race when two threads access it
