@@ -122,13 +122,13 @@ impl<S: Syscalls> Default for TockEnv<S> {
 pub fn take_storage<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config>(
 ) -> StorageResult<TockStorage<S, C>> {
     // Make sure the storage was not already taken.
-    #[cfg(not(target_arch = "riscv32"))]
+    #[cfg(target_has_atomic = "8")]
     {
         use core::sync::atomic::{AtomicBool, Ordering};
         static TAKEN: AtomicBool = AtomicBool::new(false);
         assert!(!TAKEN.fetch_or(true, Ordering::SeqCst));
     }
-    #[cfg(target_arch = "riscv32")]
+    #[cfg(not(target_has_atomic = "8"))]
     {
         static mut TAKEN: bool = false;
         assert!(unsafe { !TAKEN });

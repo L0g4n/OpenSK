@@ -48,15 +48,15 @@ use libtock_drivers::result::FlexUnwrap;
 use libtock_drivers::timer::Duration;
 use libtock_drivers::usb_ctap_hid;
 use libtock_platform::share;
-#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
+#[cfg(not(feature = "std"))]
 use libtock_runtime::{set_main, stack_size, TockSyscalls};
 #[cfg(feature = "std")]
 use libtock_unittest::fake;
 use usb_ctap_hid::UsbEndpoint;
 
-#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
+#[cfg(not(feature = "std"))]
 stack_size! {0x4000}
-#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
+#[cfg(not(feature = "std"))]
 set_main! {main}
 
 const SEND_TIMEOUT: Milliseconds<ClockInt> = Milliseconds(1000);
@@ -76,7 +76,7 @@ struct EndpointReply {
 
 #[cfg(feature = "std")]
 type SyscallImplementation = fake::Syscalls;
-#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
+#[cfg(not(feature = "std"))]
 type SyscallImplementation = TockSyscalls;
 
 impl EndpointReply {
