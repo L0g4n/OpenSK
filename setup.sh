@@ -38,7 +38,7 @@ source tools/gen_key_materials.sh
 generate_crypto_materials N
 
 rustup show
-pip3 install --user --upgrade 'tockloader==1.9.0' six intelhex
+pip3 install --user --upgrade 'tockloader==1.5.0' six intelhex
 
 # Install dependency to create applications.
 mkdir -p elf2tab

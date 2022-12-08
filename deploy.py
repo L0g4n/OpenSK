@@ -507,9 +507,12 @@ class OpenSKInstaller:
              "following commands may fail. Please use 0.10.2 instead."))
     os.makedirs(self.tab_folder, exist_ok=True)
     tab_filename = os.path.join(self.tab_folder, f"{self.args.application}.tab")
+    supported_kernel = (2, 1)
     elf2tab_args = [
         "elf2tab/bin/elf2tab", "--deterministic", "--package-name",
-        self.args.application, "-o", tab_filename
+        self.args.application, f"--kernel-major={supported_kernel[0]}",
+        f"--kernel-minor={supported_kernel[1]}",
+        "-o", tab_filename
     ]
     if self.args.verbose_build:
       elf2tab_args.append("--verbose")
@@ -725,9 +728,9 @@ class OpenSKInstaller:
 
   def check_prerequisites(self):
     """Checks versions of the used tools, exits on version mismatch."""
-    if not tockloader.__version__.startswith("1.9."):
+    if not tockloader.__version__.startswith("1.5."):
       fatal(("Your version of tockloader seems incompatible: found "
-             f"{tockloader.__version__}, expected 1.9.x."))
+             f"{tockloader.__version__}, expected 1.5.x."))
 
     if self.args.programmer == "jlink":
       assert_mandatory_binary("JLinkExe")
