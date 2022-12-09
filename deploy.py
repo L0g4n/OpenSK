@@ -530,10 +530,11 @@ class OpenSKInstaller:
           stack_sizes.add(required_stack_size)
     if len(stack_sizes) != 1:
       error("Detected different stack sizes across tab files.")
-
+    
+    # `protected-region-size` must match the `TBF_HEADER_SIZE` (currently 0x60 = 96 bytes)
     elf2tab_args.extend([
         f"--stack={stack_sizes.pop()}", f"--app-heap={APP_HEAP_SIZE}",
-        "--kernel-heap=1024", "--protected-region-size=64"
+        "--kernel-heap=1024", "--protected-region-size=96" 
     ])
     if self.args.elf2tab_output:
       output = self.checked_command_output(elf2tab_args)
