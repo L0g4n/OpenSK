@@ -10,11 +10,13 @@ use core::sync::atomic;
 use core::sync::atomic::AtomicUsize;
 #[cfg(any(feature = "debug_allocations", feature = "panic_console"))]
 use libtock_console::Console;
+use libtock_platform::{ErrorCode, Syscalls};
 use libtock_runtime::TockSyscalls;
 use linked_list_allocator::Heap;
 
 static mut HEAP: Heap = Heap::empty();
 
+// this symbol has to be called in `libtock_runtime`
 #[no_mangle]
 unsafe fn libtock_alloc_init(app_heap_bottom: *mut u8, app_heap_size: usize) {
     HEAP.init(app_heap_bottom, app_heap_size);
@@ -108,8 +110,11 @@ unsafe fn alloc_error_handler(_layout: Layout) -> ! {
         // Force the kernel to report the panic cause, by reading an invalid address.
         // The memory protection unit should be setup by the Tock kernel to prevent apps from accessing
         // address zero.
-        core::ptr::read_volatile(0 as *const usize);
+        // core::ptr::read_volatile(0 as *const usize);
+        // Exit with a non-zero exit code to indicate failure.
+        TockSyscalls::exit_terminate(ErrorCode::Fail as u32);
     }
 
+    #[cfg(not(feature = "panic_console"))]
     util::Util::<TockSyscalls>::cycle_leds()
 }
