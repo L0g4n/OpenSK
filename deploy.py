@@ -158,7 +158,7 @@ SUPPORTED_BOARDS = {
 
 # The following value must match the one used in the file
 # `src/entry_point.rs`
-APP_HEAP_SIZE = 90000
+APP_HEAP_SIZE = 90_000
 
 CARGO_TARGET_DIR = os.environ.get("CARGO_TARGET_DIR", "target")
 
