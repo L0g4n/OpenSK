@@ -42,9 +42,11 @@ pub enum TockError {
 impl core::fmt::Debug for TockError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            TockError::Command(error_code) => error_code.fmt(f),
+            TockError::Command(error_code) => {
+                f.write_fmt(format_args!("CommandError: {:?}", error_code))
+            }
             TockError::Format => f.write_str("TockError::Format"),
-            TockError::Other(e) => e.fmt(f),
+            TockError::Other(e) => f.write_fmt(format_args!("OtherError: {:?}", e)),
         }
     }
 }

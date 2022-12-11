@@ -146,8 +146,10 @@ impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
     /// Initializes the data of the containing [WithCallback], i.e. number of notifications, clock frequency, and registers the
     /// subscription for the timer upcall.
     pub fn init(&mut self) -> TockResult<Timer<S, C>> {
-        let num_notifications =
-            S::command(DRIVER_NUM, command::DRIVER_CHECK, 0, 0).to_result::<u32, ErrorCode>()?;
+        // alarm driver only returns success as only a single concurrent timer is supported
+        let num_notifications = S::command(DRIVER_NUM, command::DRIVER_CHECK, 0, 0)
+            .to_result::<(), ErrorCode>()
+            .map(|_| 1)?;
 
         let clock_frequency =
             S::command(DRIVER_NUM, command::FREQUENCY, 0, 0).to_result::<u32, ErrorCode>()?;
