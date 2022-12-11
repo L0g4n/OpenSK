@@ -44,6 +44,8 @@ use embedded_time::duration::Milliseconds;
 use libtock_buttons::{ButtonListener, ButtonState, Buttons};
 #[cfg(feature = "debug_ctap")]
 use libtock_console::Console;
+#[cfg(feature = "debug_ctap")]
+use libtock_console::ConsoleWriter;
 use libtock_drivers::result::FlexUnwrap;
 use libtock_drivers::timer::Duration;
 use libtock_drivers::usb_ctap_hid;
@@ -129,14 +131,11 @@ impl EndpointReplies {
 
 fn main() {
     let clock = new_clock();
+    #[cfg(feature = "debug_ctap")]
+    let mut writer = Console::<SyscallImplementation>::writer();
 
     #[cfg(feature = "debug_ctap")]
-    writeln!(
-        Console::<SyscallImplementation>::writer(),
-        "Hello, World from ctap2!"
-    )
-    .ok()
-    .unwrap();
+    writeln!(writer, "Hello world from ctap2!").ok().unwrap();
 
     // Setup USB driver.
     if !usb_ctap_hid::UsbCtapHid::<SyscallImplementation>::setup() {
@@ -155,6 +154,8 @@ fn main() {
     // Main loop. If CTAP1 is used, we register button presses for U2F while receiving and waiting.
     // The way TockOS and apps currently interact, callbacks need a yield syscall to execute,
     // making consistent blinking patterns and sending keepalives harder.
+    #[cfg(feature = "debug_ctap")]
+    writeln!(writer, "Entering main ctap loop").unwrap();
     loop {
         // Create the button callback, used for CTAP1.
         #[cfg(feature = "with_ctap1")]
@@ -195,6 +196,7 @@ fn main() {
                     print_packet_notice::<SyscallImplementation>(
                         "Sending packet timed out",
                         &clock,
+                        &mut writer,
                     );
                     // TODO: reset the ctap_hid state.
                     // Since sending the packet timed out, we cancel this reply.
@@ -202,11 +204,19 @@ fn main() {
                 }
                 Ok(SendOrRecvStatus::Sent) => {
                     #[cfg(feature = "debug_ctap")]
-                    print_packet_notice::<SyscallImplementation>("Sent packet", &clock);
+                    print_packet_notice::<SyscallImplementation>(
+                        "Sent packet",
+                        &clock,
+                        &mut writer,
+                    );
                 }
                 Ok(SendOrRecvStatus::Received(ep)) => {
                     #[cfg(feature = "debug_ctap")]
-                    print_packet_notice::<SyscallImplementation>("Received another packet", &clock);
+                    print_packet_notice::<SyscallImplementation>(
+                        "Received another packet",
+                        &clock,
+                        &mut writer,
+                    );
                     usb_endpoint = Some(ep);
 
                     // Copy to incoming packet to local buffer to be consistent
@@ -226,7 +236,11 @@ fn main() {
                 {
                     usb_ctap_hid::SendOrRecvStatus::Received(endpoint) => {
                         #[cfg(feature = "debug_ctap")]
-                        print_packet_notice::<SyscallImplementation>("Received packet", &clock);
+                        print_packet_notice::<SyscallImplementation>(
+                            "Received packet",
+                            &clock,
+                            &mut writer,
+                        );
                         Some(endpoint)
                     }
                     usb_ctap_hid::SendOrRecvStatus::Sent => {
@@ -317,13 +331,17 @@ fn main() {
 }
 
 #[cfg(feature = "debug_ctap")]
-fn print_packet_notice<S: libtock_platform::Syscalls>(notice_text: &str, clock: &CtapClock) {
+fn print_packet_notice<S: libtock_platform::Syscalls>(
+    notice_text: &str,
+    clock: &CtapClock,
+    writer: &mut ConsoleWriter<S>,
+) {
     let now = clock.try_now().unwrap();
     let now_us = Microseconds::<u64>::try_from(now.duration_since_epoch())
         .unwrap()
         .0;
     writeln!(
-        Console::<S>::writer(),
+        writer,
         "{} at {}.{:06} s",
         notice_text,
         now_us / 1_000_000,
