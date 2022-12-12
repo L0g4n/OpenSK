@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 use arrayref::array_ref;
 use byteorder::{ByteOrder, LittleEndian};
 use core::cell::Cell;
-use core::convert::TryInto;
 use core::marker::PhantomData;
 use crypto::sha256::Sha256;
 use crypto::{ecdsa, Hash256};
@@ -73,13 +72,17 @@ fn get_info<S: Syscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
 }
 
 fn memop<S: RawSyscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
-    let code = unsafe {
-        S::syscall2::<{ syscall_class::MEMOP }>([nr.into(), arg.into()])[0]
-            .try_into()
-            .unwrap()
-    };
+    let registers = unsafe { S::syscall2::<{ syscall_class::MEMOP }>([nr.into(), arg.into()]) };
 
-    Ok(code)
+    let r0 = registers[0].as_u32();
+    let r1 = registers[1].as_u32();
+
+    // make sure r0 is the `success with u32` (129) return variant and then return the value in r1 as u32
+    // see: https://github.com/tock/tock/blob/master/doc/reference/trd104-syscalls.md#32-return-values
+    match (r0, r1) {
+        (129, r1) => Ok(r1),
+        (_, _) => Err(StorageError::CustomError),
+    }
 }
 
 fn block_command<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config>(
@@ -184,7 +187,8 @@ impl<S: Syscalls, C: platform::subscribe::Config + platform::allow_ro::Config> T
         {
             return Err(StorageError::CustomError);
         }
-        for i in 0..memop::<S>(memop_nr::STORAGE_CNT, 0)? {
+        let num_storage_locations = memop::<S>(memop_nr::STORAGE_CNT, 0)?;
+        for i in 0..num_storage_locations {
             if memop::<S>(memop_nr::STORAGE_TYPE, i)? != storage_type::STORE {
                 continue;
             }
