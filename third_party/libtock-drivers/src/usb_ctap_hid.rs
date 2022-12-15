@@ -235,7 +235,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             _ => status.set(None),
         });
 
-        share::scope::<
+        let status = share::scope::<
             (
                 AllowRw<_, DRIVER_NUMBER, { rw_allow_nr::RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::RECEIVE }>,
@@ -251,50 +251,53 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             // register the usb endpoint listener
             Self::register_listener::<{ subscribe_nr::RECEIVE }, _>(&alarm, subscribe)?;
 
-            Ok::<(), ErrorCode>(())
-        })?;
+            // Setup a time-out callback.
+            let mut timeout_callback =
+                timer::with_callback::<S, C, _>(|_| status.set(Some(SendOrRecvStatus::Timeout)));
+            // FIXME: the `timer` module needs also fixing, the subscribe call is wrong as it must
+            // be triggered in this scope here with the handle or else it won't work
+            let mut timeout = timeout_callback.init()?;
+            timeout
+                .set_alarm(timeout_delay)
+                .map_err(|_| ErrorCode::Fail)?;
 
-        // Setup a time-out callback.
-        let mut timeout_callback =
-            timer::with_callback::<S, C, _>(|_| status.set(Some(SendOrRecvStatus::Timeout)));
-        let mut timeout = timeout_callback.init()?;
-        timeout.set_alarm(timeout_delay)?;
+            // Trigger USB reception.
+            S::command(DRIVER_NUMBER, command_nr::RECEIVE, 0, 0).to_result::<u32, ErrorCode>()?;
 
-        // Trigger USB reception.
-        S::command(DRIVER_NUMBER, command_nr::RECEIVE, 0, 0).to_result::<u32, ErrorCode>()?;
+            Util::<S>::yieldk_for(|| status.get().is_some());
+            Self::unregister_listener(subscribe_nr::RECEIVE);
 
-        Util::<S>::yieldk_for(|| status.get().is_some());
-        Self::unregister_listener(subscribe_nr::RECEIVE);
+            // do proper error handling
+            let status = match status.get() {
+                Some(status) => Ok::<SendOrRecvStatus, TockError>(status),
+                None => Err(OutOfRangeError.into()),
+            }?;
 
-        // do proper error handling
-        let status = match status.get() {
-            Some(status) => Ok::<SendOrRecvStatus, TockError>(status),
-            None => Err(OutOfRangeError.into()),
-        }?;
-
-        // Cleanup alarm callback.
-        match timeout.stop_alarm() {
-            Ok(()) => (),
-            Err(TockError::Command(ErrorCode::Already)) => {
-                if matches!(status, SendOrRecvStatus::Timeout) {
-                    #[cfg(feature = "debug_ctap")]
-                    writeln!(
+            // Cleanup alarm callback.
+            match timeout.stop_alarm() {
+                Ok(()) => (),
+                Err(TockError::Command(ErrorCode::Already)) => {
+                    if matches!(status, SendOrRecvStatus::Timeout) {
+                        #[cfg(feature = "debug_ctap")]
+                        writeln!(
                         Console::<S>::writer(),
                         "The receive timeout already expired, but the callback wasn't executed."
                     )
-                    .unwrap();
+                        .unwrap();
+                    }
+                }
+                Err(_e) => {
+                    #[cfg(feature = "debug_ctap")]
+                    panic!("Unexpected error when stopping alarm: {:?}", _e);
+                    #[cfg(not(feature = "debug_ctap"))]
+                    panic!("Unexpected error when stopping alarm: <error is only visible with the debug_ctap feature>");
                 }
             }
-            Err(_e) => {
-                #[cfg(feature = "debug_ctap")]
-                panic!("Unexpected error when stopping alarm: {:?}", _e);
-                #[cfg(not(feature = "debug_ctap"))]
-                panic!("Unexpected error when stopping alarm: <error is only visible with the debug_ctap feature>");
-            }
-        }
+            Ok::<SendOrRecvStatus, TockError>(status)
+        });
 
         // Cancel USB transaction if necessary.
-        if matches!(status, SendOrRecvStatus::Timeout) {
+        if matches!(status, Ok(SendOrRecvStatus::Timeout)) {
             #[cfg(feature = "verbose_usb")]
             writeln!(
                 Console::<S>::writer(),
@@ -318,7 +321,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             }
         }
 
-        Ok(status)
+        status
     }
 
     fn send_or_recv_with_timeout_detail(
@@ -339,7 +342,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             status.set(option);
         });
 
-        share::scope::<
+        let status = share::scope::<
             (
                 AllowRo<_, DRIVER_NUMBER, { ro_allow_nr::TRANSMIT_OR_RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::TRANSMIT_OR_RECEIVE }>,
@@ -354,56 +357,56 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
 
             Self::register_listener::<{ subscribe_nr::TRANSMIT_OR_RECEIVE }, _>(&alarm, subscribe)?;
 
-            Ok::<(), ErrorCode>(())
-        })?;
+            // Setup a time-out callback.
+            let mut timeout_callback = timer::with_callback::<S, C, _>(|_| {
+                status.set(Some(SendOrRecvStatus::Timeout));
+            });
+            let mut timeout = timeout_callback.init()?;
+            timeout.set_alarm(timeout_delay)?;
 
-        // Setup a time-out callback.
-        let mut timeout_callback = timer::with_callback::<S, C, _>(|_| {
-            status.set(Some(SendOrRecvStatus::Timeout));
-        });
-        let mut timeout = timeout_callback.init()?;
-        timeout.set_alarm(timeout_delay)?;
+            // Trigger USB transmission.
+            S::command(
+                DRIVER_NUMBER,
+                command_nr::TRANSMIT_OR_RECEIVE,
+                endpoint as u32,
+                0,
+            )
+            .to_result::<(), ErrorCode>()?;
 
-        // Trigger USB transmission.
-        S::command(
-            DRIVER_NUMBER,
-            command_nr::TRANSMIT_OR_RECEIVE,
-            endpoint as u32,
-            0,
-        )
-        .to_result::<(), ErrorCode>()?;
+            util::Util::<S>::yieldk_for(|| status.get().is_some());
+            Self::unregister_listener(subscribe_nr::TRANSMIT_OR_RECEIVE);
 
-        util::Util::<S>::yieldk_for(|| status.get().is_some());
-        Self::unregister_listener(subscribe_nr::TRANSMIT_OR_RECEIVE);
-        // do proper error handling
-        let status = match status.get() {
-            Some(status) => Ok::<SendOrRecvStatus, TockError>(status),
-            None => Err(OutOfRangeError.into()),
-        }?;
+            // do proper error handling
+            let status = match status.get() {
+                Some(status) => Ok::<SendOrRecvStatus, TockError>(status),
+                None => Err(OutOfRangeError.into()),
+            }?;
 
-        // Cleanup alarm callback.
-        match timeout.stop_alarm() {
-            Ok(_) => (),
-            Err(TockError::Command(ErrorCode::Already)) => {
-                if matches!(status, SendOrRecvStatus::Timeout) {
-                    #[cfg(feature = "debug_ctap")]
-                    writeln!(
+            // Cleanup alarm callback.
+            match timeout.stop_alarm() {
+                Ok(_) => (),
+                Err(TockError::Command(ErrorCode::Already)) => {
+                    if matches!(status, SendOrRecvStatus::Timeout) {
+                        #[cfg(feature = "debug_ctap")]
+                        writeln!(
                     Console::<S>::writer(),
                     "The send/receive timeout already expired, but the callback wasn't executed."
                 )
-                    .unwrap();
+                        .unwrap();
+                    }
+                }
+                Err(_e) => {
+                    #[cfg(feature = "debug_ctap")]
+                    panic!("Unexpected error when stopping alarm: {:?}", _e);
+                    #[cfg(not(feature = "debug_ctap"))]
+                    panic!("Unexpected error when stopping alarm: <error is only visible with the debug_ctap feature>");
                 }
             }
-            Err(_e) => {
-                #[cfg(feature = "debug_ctap")]
-                panic!("Unexpected error when stopping alarm: {:?}", _e);
-                #[cfg(not(feature = "debug_ctap"))]
-                panic!("Unexpected error when stopping alarm: <error is only visible with the debug_ctap feature>");
-            }
-        }
+            Ok::<SendOrRecvStatus, TockError>(status)
+        });
 
         // Cancel USB transaction if necessary.
-        if matches!(status, SendOrRecvStatus::Timeout) {
+        if matches!(status, Ok(SendOrRecvStatus::Timeout)) {
             #[cfg(feature = "verbose_usb")]
             writeln!(
                 Console::<S>::writer(),
@@ -429,6 +432,6 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             writeln!(Console::<S>::writer(), "Cancelled USB transaction!").unwrap();
         }
 
-        Ok(status)
+        status
     }
 }

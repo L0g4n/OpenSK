@@ -86,16 +86,12 @@ impl<S: Syscalls> TockEnv<S> {
     ///
     /// - If called a second time.
     pub fn new() -> Self {
-        use core::fmt::Write;
-        let mut writer = Console::<S>::writer();
         // We rely on `take_storage` to ensure that this function is called only once.
         let storage = take_storage().unwrap();
-        // let store = Store::new(storage).ok().unwrap(); // FIXME: this panics
         let store = match Store::new(storage) {
             Ok(s) => s,
             Err((e, _)) => panic!("StoreError: {:?}", e),
         };
-        writeln!(writer, "after storage initialization!").unwrap();
         let upgrade_storage = TockUpgradeStorage::new().ok();
         TockEnv {
             rng: TockRng256::new(),

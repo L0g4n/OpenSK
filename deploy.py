@@ -445,8 +445,8 @@ class OpenSKInstaller:
         f"link-arg=-T{props.app_ldscript}",
         "-C",
         "relocation-model=static",
-        "-D",
-        "warnings",
+        #"-D",
+        #"warnings",
         f"--remap-path-prefix={os.getcwd()}=",
         "-C",
         "link-arg=-icf=all",
@@ -783,8 +783,8 @@ class OpenSKInstaller:
       info("Nothing to do.")
       return 0
 
-    if self.args.check_patches:
-      subprocess.run(["./maintainers/patches", "check"], check=False)
+    # if self.args.check_patches:
+    #   subprocess.run(["./maintainers/patches", "check"], check=False)
 
     # Compile what needs to be compiled
     board_props = SUPPORTED_BOARDS[self.args.board]

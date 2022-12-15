@@ -66,9 +66,9 @@ mod storage_type {
 }
 
 fn get_info<S: Syscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
-    let code =
-        S::command(DRIVER_NUMBER, command_nr::GET_INFO, nr, arg).to_result::<u32, ErrorCode>();
-    code.map_err(|_| StorageError::CustomError)
+    let info =
+        S::command(DRIVER_NUMBER, command_nr::GET_INFO, nr, arg).to_result::<u32, ErrorCode>()?;
+    Ok(info)
 }
 
 fn memop<S: RawSyscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
@@ -81,7 +81,7 @@ fn memop<S: RawSyscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
     // see: https://github.com/tock/tock/blob/master/doc/reference/trd104-syscalls.md#32-return-values
     match (r0, r1) {
         (129, r1) => Ok(r1),
-        (_, _) => Err(StorageError::CustomError),
+        (_, _) => Err(StorageError::LibtockRsError(ErrorCode::BadRVal)),
     }
 }
 
@@ -91,27 +91,29 @@ fn block_command<S: Syscalls, C: platform::subscribe::Config + platform::allow_r
     arg1: u32,
     arg2: u32,
 ) -> StorageResult<()> {
+    use core::fmt::Write;
+    use libtock_console::Console;
+    let mut writer = Console::<S>::writer();
+    writeln!(writer, "beginning of block command").unwrap();
     let called: Cell<Option<(u32,)>> = Cell::new(None);
 
-    let subscription = share::scope(|subscribe| {
-        S::subscribe::<_, _, C, DRIVER_NUMBER, { subscribe_nr::DONE }>(subscribe, &called)
-    });
-
-    if subscription.is_err() {
-        return Err(StorageError::CustomError);
-    }
-
-    let code = S::command(driver, cmd, arg1, arg2).to_result::<u32, ErrorCode>();
-    if code.is_err() {
-        return Err(StorageError::CustomError);
-    }
-
-    libtock_drivers::util::Util::<S>::yieldk_for(|| called.get().is_some());
-    if called.get().unwrap().0 == 0 {
-        Ok(())
-    } else {
-        Err(StorageError::CustomError)
-    }
+    share::scope(|subscribe| {
+        S::subscribe::<_, _, C, DRIVER_NUMBER, { subscribe_nr::DONE }>(subscribe, &called)?;
+        writeln!(
+            writer,
+            "before cmd; driver: {}, cmd: {}, arg1: {}, arg2: {}",
+            driver, cmd, arg1, arg2
+        )
+        .unwrap();
+        S::command(driver, cmd, arg1, arg2).to_result::<(), ErrorCode>()?;
+        libtock_drivers::util::Util::<S>::yieldk_for(|| called.get().is_some());
+        writeln!(writer, "end of block command").unwrap();
+        if called.get().unwrap().0 == 0 {
+            Ok(())
+        } else {
+            Err(StorageError::LibtockRsError(ErrorCode::Invalid))
+        }
+    })
 }
 
 unsafe fn read_slice(address: usize, length: usize) -> &'static [u8] {
@@ -122,25 +124,34 @@ fn write_slice<S: Syscalls, C: platform::allow_ro::Config + platform::subscribe:
     ptr: usize,
     value: &[u8],
 ) -> StorageResult<()> {
-    let result = share::scope(|allow_ro| {
-        S::allow_ro::<C, DRIVER_NUMBER, { ro_allow_nr::WRITE_SLICE }>(allow_ro, value)
-    });
-    if result.is_err() {
-        return Err(StorageError::CustomError);
-    }
-
-    block_command::<S, C>(
-        DRIVER_NUMBER,
-        command_nr::WRITE_SLICE,
-        ptr as u32,
-        value.len() as u32,
+    use core::fmt::Write;
+    use libtock_console::Console;
+    let mut writer = Console::<S>::writer();
+    writeln!(
+        writer,
+        "beginning of write slice command: ptr: {}, value: {:?}",
+        ptr, value
     )
+    .unwrap();
+    share::scope(|allow_ro| {
+        S::allow_ro::<C, DRIVER_NUMBER, { ro_allow_nr::WRITE_SLICE }>(allow_ro, value)?;
+        block_command::<S, C>(
+            DRIVER_NUMBER,
+            command_nr::WRITE_SLICE,
+            ptr as u32,
+            value.len() as u32,
+        )
+    })
 }
 
 fn erase_page<S: Syscalls, C: platform::allow_ro::Config + platform::subscribe::Config>(
     ptr: usize,
     page_length: usize,
 ) -> StorageResult<()> {
+    use core::fmt::Write;
+    use libtock_console::Console;
+    let mut writer = Console::<S>::writer();
+    writeln!(writer, "beginning of erase page command").unwrap();
     block_command::<S, C>(
         DRIVER_NUMBER,
         command_nr::ERASE_PAGE,
