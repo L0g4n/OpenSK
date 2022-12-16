@@ -15,8 +15,9 @@ use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Sub};
 use libtock_platform as platform;
 use libtock_platform::{share, DefaultConfig, ErrorCode, Syscalls};
+use platform::share::Handle;
 use platform::subscribe::OneId;
-use platform::Upcall;
+use platform::{Subscribe, Upcall};
 
 pub struct Alarm<S: Syscalls, C: platform::subscribe::Config = DefaultConfig>(S, C);
 
@@ -143,8 +144,7 @@ impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
 impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
     TimerUpcallConsumer<S, C, CB>
 {
-    /// Initializes the data of the containing [WithCallback], i.e. number of notifications, clock frequency, and registers the
-    /// subscription for the timer upcall.
+    /// Initializes the data of the containing [WithCallback], i.e. number of notifications, clock frequency.
     pub fn init(&mut self) -> TockResult<Timer<S, C>> {
         // alarm driver only returns success as only a single concurrent timer is supported
         let num_notifications = S::command(DRIVER_NUM, command::DRIVER_CHECK, 0, 0)
@@ -160,19 +160,22 @@ impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
 
         let clock_frequency = Hz(clock_frequency);
 
-        // register the upcall for the timer
-        share::scope(|handle| {
-            S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::CALLBACK }>(handle, self)?;
-
-            Ok::<(), ErrorCode>(())
-        })?;
-
         Ok(Timer {
             num_notifications,
             clock_frequency,
             _marker_c: PhantomData,
             _marker_s: PhantomData,
         })
+    }
+
+    /// Enables the timer by subscribing for the countdown.
+    /// This needs to be a separate method as it needs to be called in the same `share::scope`
+    pub fn enable<'share, 'a: 'share>(
+        &'a self,
+        handle: Handle<Subscribe<'share, S, DRIVER_NUM, { subscribe::CALLBACK }>>,
+    ) -> Result<(), ErrorCode> {
+        // register the upcall for the timer
+        S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::CALLBACK }>(handle, self)
     }
 }
 
@@ -429,7 +432,7 @@ where
 // Driver number and command IDs
 // -----------------------------------------------------------------------------
 
-const DRIVER_NUM: u32 = 0;
+pub const DRIVER_NUM: u32 = 0;
 
 // Command IDs
 #[allow(unused)]
@@ -444,6 +447,6 @@ mod command {
 }
 
 #[allow(unused)]
-mod subscribe {
+pub mod subscribe {
     pub const CALLBACK: u32 = 0;
 }

@@ -235,28 +235,28 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             _ => status.set(None),
         });
 
+        // init the time-out callback but don't enable it yet
+        let mut timeout_callback =
+            timer::with_callback::<S, C, _>(|_| status.set(Some(SendOrRecvStatus::Timeout)));
         let status = share::scope::<
             (
                 AllowRw<_, DRIVER_NUMBER, { rw_allow_nr::RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::RECEIVE }>,
+                Subscribe<S, { timer::DRIVER_NUM }, { timer::subscribe::CALLBACK }>,
             ),
             _,
             _,
         >(|handle| {
-            let (allow, subscribe) = handle.split();
+            let (allow, subscribe_ctap, subscribe_timer) = handle.split();
             // we need to share a *read-write* buffer with the kernel because it needs
             // to copy the packet into the buffer
             S::allow_rw::<C, DRIVER_NUMBER, { rw_allow_nr::RECEIVE }>(allow, buf)?;
 
             // register the usb endpoint listener
-            Self::register_listener::<{ subscribe_nr::RECEIVE }, _>(&alarm, subscribe)?;
+            Self::register_listener::<{ subscribe_nr::RECEIVE }, _>(&alarm, subscribe_ctap)?;
 
-            // Setup a time-out callback.
-            let mut timeout_callback =
-                timer::with_callback::<S, C, _>(|_| status.set(Some(SendOrRecvStatus::Timeout)));
-            // FIXME: the `timer` module needs also fixing, the subscribe call is wrong as it must
-            // be triggered in this scope here with the handle or else it won't work
             let mut timeout = timeout_callback.init()?;
+            timeout_callback.enable(subscribe_timer)?;
             timeout
                 .set_alarm(timeout_delay)
                 .map_err(|_| ErrorCode::Fail)?;
@@ -342,26 +342,28 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             status.set(option);
         });
 
+        // init the time-out callback but don't enable it yet
+        let mut timeout_callback = timer::with_callback::<S, C, _>(|_| {
+            status.set(Some(SendOrRecvStatus::Timeout));
+        });
         let status = share::scope::<
             (
                 AllowRo<_, DRIVER_NUMBER, { ro_allow_nr::TRANSMIT_OR_RECEIVE }>,
                 Subscribe<_, DRIVER_NUMBER, { subscribe_nr::TRANSMIT_OR_RECEIVE }>,
+                Subscribe<_, { timer::DRIVER_NUM }, { timer::subscribe::CALLBACK }>,
             ),
             _,
             _,
         >(|handle| {
-            let (allow, subscribe) = handle.split();
+            let (allow, sub_ctap, sub_timer) = handle.split();
 
             // receiving a packet alone does *not* require sharing a rw-buffer with the kernel
             S::allow_ro::<C, DRIVER_NUMBER, { ro_allow_nr::TRANSMIT_OR_RECEIVE }>(allow, buf)?;
 
-            Self::register_listener::<{ subscribe_nr::TRANSMIT_OR_RECEIVE }, _>(&alarm, subscribe)?;
+            Self::register_listener::<{ subscribe_nr::TRANSMIT_OR_RECEIVE }, _>(&alarm, sub_ctap)?;
 
-            // Setup a time-out callback.
-            let mut timeout_callback = timer::with_callback::<S, C, _>(|_| {
-                status.set(Some(SendOrRecvStatus::Timeout));
-            });
             let mut timeout = timeout_callback.init()?;
+            timeout_callback.enable(sub_timer)?;
             timeout.set_alarm(timeout_delay)?;
 
             // Trigger USB transmission.
