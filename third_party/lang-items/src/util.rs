@@ -41,6 +41,7 @@ impl<S: Syscalls, C: platform::subscribe::Config> Util<S, C> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn cycle_leds() -> ! {
         // Cycle though all LEDs (if available). All errors from syscalls are ignored: we are already
         // inside an error handler so there is nothing much to do if simple drivers (timer, LEDs) don't

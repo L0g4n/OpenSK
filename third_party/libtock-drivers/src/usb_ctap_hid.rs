@@ -262,7 +262,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
                 .map_err(|_| ErrorCode::Fail)?;
 
             // Trigger USB reception.
-            S::command(DRIVER_NUMBER, command_nr::RECEIVE, 0, 0).to_result::<u32, ErrorCode>()?;
+            S::command(DRIVER_NUMBER, command_nr::RECEIVE, 0, 0).to_result::<(), ErrorCode>()?;
 
             Util::<S>::yieldk_for(|| status.get().is_some());
             Self::unregister_listener(subscribe_nr::RECEIVE);
