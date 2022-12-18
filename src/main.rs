@@ -232,7 +232,7 @@ fn main() {
                     &mut pkt_request,
                     KEEPALIVE_DELAY_TOCK,
                 )
-                .flex_unwrap() // FIXME: this panics with "BADRVAL"
+                .flex_unwrap()
                 {
                     usb_ctap_hid::SendOrRecvStatus::Received(endpoint) => {
                         #[cfg(feature = "debug_ctap")]

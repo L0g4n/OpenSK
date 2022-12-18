@@ -91,23 +91,12 @@ fn block_command<S: Syscalls, C: platform::subscribe::Config + platform::allow_r
     arg1: u32,
     arg2: u32,
 ) -> StorageResult<()> {
-    use core::fmt::Write;
-    use libtock_console::Console;
-    let mut writer = Console::<S>::writer();
-    writeln!(writer, "beginning of block command").unwrap();
     let called: Cell<Option<(u32,)>> = Cell::new(None);
 
     share::scope(|subscribe| {
         S::subscribe::<_, _, C, DRIVER_NUMBER, { subscribe_nr::DONE }>(subscribe, &called)?;
-        writeln!(
-            writer,
-            "before cmd; driver: {}, cmd: {}, arg1: {}, arg2: {}",
-            driver, cmd, arg1, arg2
-        )
-        .unwrap();
         S::command(driver, cmd, arg1, arg2).to_result::<(), ErrorCode>()?;
         libtock_drivers::util::Util::<S>::yieldk_for(|| called.get().is_some());
-        writeln!(writer, "end of block command").unwrap();
         if called.get().unwrap().0 == 0 {
             Ok(())
         } else {
@@ -124,15 +113,6 @@ fn write_slice<S: Syscalls, C: platform::allow_ro::Config + platform::subscribe:
     ptr: usize,
     value: &[u8],
 ) -> StorageResult<()> {
-    use core::fmt::Write;
-    use libtock_console::Console;
-    let mut writer = Console::<S>::writer();
-    writeln!(
-        writer,
-        "beginning of write slice command: ptr: {}, value: {:?}",
-        ptr, value
-    )
-    .unwrap();
     share::scope(|allow_ro| {
         S::allow_ro::<C, DRIVER_NUMBER, { ro_allow_nr::WRITE_SLICE }>(allow_ro, value)?;
         block_command::<S, C>(
@@ -148,10 +128,6 @@ fn erase_page<S: Syscalls, C: platform::allow_ro::Config + platform::subscribe::
     ptr: usize,
     page_length: usize,
 ) -> StorageResult<()> {
-    use core::fmt::Write;
-    use libtock_console::Console;
-    let mut writer = Console::<S>::writer();
-    writeln!(writer, "beginning of erase page command").unwrap();
     block_command::<S, C>(
         DRIVER_NUMBER,
         command_nr::ERASE_PAGE,
