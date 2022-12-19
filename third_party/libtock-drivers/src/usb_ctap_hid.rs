@@ -349,7 +349,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
         let status = share::scope::<
             (
                 AllowRo<_, DRIVER_NUMBER, { ro_allow_nr::TRANSMIT_OR_RECEIVE }>,
-                Subscribe<_, DRIVER_NUMBER, { subscribe_nr::TRANSMIT_OR_RECEIVE }>,
+                Subscribe<_, DRIVER_NUMBER, { subscribe_nr::_TRANSMIT }>,
                 Subscribe<_, { timer::DRIVER_NUM }, { timer::subscribe::CALLBACK }>,
             ),
             _,
@@ -360,7 +360,7 @@ impl<S: Syscalls, C: Config> UsbCtapHid<S, C> {
             // receiving a packet alone does *not* require sharing a rw-buffer with the kernel
             S::allow_ro::<C, DRIVER_NUMBER, { ro_allow_nr::TRANSMIT_OR_RECEIVE }>(allow, buf)?;
 
-            Self::register_listener::<{ subscribe_nr::TRANSMIT_OR_RECEIVE }, _>(&alarm, sub_ctap)?;
+            Self::register_listener::<{ subscribe_nr::_TRANSMIT }, _>(&alarm, sub_ctap)?;
 
             let mut timeout = timeout_callback.init()?;
             timeout_callback.enable(sub_timer)?;
