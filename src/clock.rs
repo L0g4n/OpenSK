@@ -58,7 +58,7 @@ impl<const CLOCK_FREQUENCY: u32> embedded_time::Clock for LibtockClock<CLOCK_FRE
 
     fn try_now(&self) -> Result<embedded_time::Instant<Self>, embedded_time::clock::Error> {
         let timer = &self.0;
-        let now = timer.get_current_clock().flex_unwrap();
+        let now = timer.get_current_counter_ticks().flex_unwrap();
         Ok(embedded_time::Instant::new(now.num_ticks() as Self::T))
     }
 }

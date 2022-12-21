@@ -100,7 +100,6 @@ impl<S: Syscalls, C: platform::subscribe::Config> Alarm<S, C> {
 }
 
 pub struct Timer<S: Syscalls, C: platform::subscribe::Config = DefaultConfig> {
-    num_notifications: u32,
     clock_frequency: Hz,
     _marker_s: PhantomData<S>,
     _marker_c: PhantomData<C>,
@@ -133,9 +132,9 @@ pub struct TimerUpcallConsumer<S: Syscalls, C: platform::subscribe::Config, CB: 
 impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
     Upcall<OneId<DRIVER_NUM, { subscribe::CALLBACK }>> for TimerUpcallConsumer<S, C, CB>
 {
-    fn upcall(&self, clock_value: u32, _: u32, _: u32) {
+    fn upcall(&self, expired_tick_val: u32, _ref_tick: u32, _: u32) {
         (self.data.callback)(ClockValue::new(
-            clock_value as isize,
+            expired_tick_val as isize,
             self.data.clock_frequency,
         ))
     }
@@ -146,22 +145,21 @@ impl<S: Syscalls, C: platform::subscribe::Config, CB: Fn(ClockValue)>
 {
     /// Initializes the data of the containing [WithCallback], i.e. number of notifications, clock frequency.
     pub fn init(&mut self) -> TockResult<Timer<S, C>> {
+        // check if the alarm driver works
+        S::command(DRIVER_NUM, command::DRIVER_CHECK, 0, 0).to_result::<(), ErrorCode>()?;
         // alarm driver only returns success as only a single concurrent timer is supported
-        let num_notifications = S::command(DRIVER_NUM, command::DRIVER_CHECK, 0, 0)
-            .to_result::<(), ErrorCode>()
-            .map(|_| 1)?;
 
         let clock_frequency =
             S::command(DRIVER_NUM, command::FREQUENCY, 0, 0).to_result::<u32, ErrorCode>()?;
 
-        if clock_frequency == 0 {
+        if clock_frequency < 1_000 {
+            // the alarm's frequency must be at least 1 kHz
             return Err(OtherError::TimerDriverErroneousClockFrequency.into());
         }
 
         let clock_frequency = Hz(clock_frequency);
 
         Ok(Timer {
-            num_notifications,
             clock_frequency,
             _marker_c: PhantomData,
             _marker_s: PhantomData,
@@ -187,11 +185,9 @@ impl<S: Syscalls, C: platform::subscribe::Config> Default for Timer<S, C> {
 
 impl<S: Syscalls, C: platform::subscribe::Config> Timer<S, C> {
     pub fn new() -> Self {
-        let num_notifications = Alarm::<S, C>::driver_check().unwrap_or_default();
         let clock_frequency = Alarm::<S, C>::get_frequency().unwrap();
 
         Self {
-            num_notifications,
             clock_frequency,
             _marker_s: PhantomData,
             _marker_c: PhantomData,
@@ -213,18 +209,13 @@ impl<S: Syscalls, C: platform::subscribe::Config> Timer<S, C> {
         }
     }
 
-    /// Returns the number of notifications supported per process
-    pub fn num_notifications(&self) -> u32 {
-        self.num_notifications
-    }
-
     /// Returns the clock frequency of the timer
     pub fn clock_frequency(&self) -> Hz {
         self.clock_frequency
     }
 
     /// Returns the current counter tick value
-    pub fn get_current_clock(&self) -> TockResult<ClockValue> {
+    pub fn get_current_counter_ticks(&self) -> TockResult<ClockValue> {
         let ticks = S::command(DRIVER_NUM, command::TIME, 0, 0).to_result::<u32, ErrorCode>()?;
 
         Ok(ClockValue {
@@ -236,39 +227,19 @@ impl<S: Syscalls, C: platform::subscribe::Config> Timer<S, C> {
     /// Stops the currently active alarm
     pub fn stop_alarm(&mut self) -> TockResult<()> {
         S::unsubscribe(DRIVER_NUM, subscribe::CALLBACK);
-        S::command(DRIVER_NUM, command::STOP, 0, 0).to_result::<u32, ErrorCode>()?;
+        S::command(DRIVER_NUM, command::STOP, 0, 0).to_result::<(), ErrorCode>()?;
 
         Ok(())
     }
 
     pub fn set_alarm(&mut self, duration: Duration<isize>) -> TockResult<()> {
-        let now = self.get_current_clock()?;
         let freq = self.clock_frequency;
-        let duration_ms = duration.ms() as usize;
+        let duration_ms = duration.ms() as u32;
+        let ticks = Milliseconds(duration_ms).to_ticks(freq);
 
-        let ticks = match duration_ms.checked_mul(freq.0 as usize) {
-            Some(x) => x / 1000,
-            None => {
-                // Divide the largest of the two operands by 1000, to improve precision of the
-                // result.
-                if duration_ms > freq.0 as usize {
-                    match (duration_ms / 1000).checked_mul(freq.0 as usize) {
-                        Some(y) => y,
-                        None => return Err(OtherError::TimerDriverDurationOutOfRange.into()),
-                    }
-                } else {
-                    match (freq.0 as usize / 1000).checked_mul(duration_ms) {
-                        Some(y) => y,
-                        None => return Err(OtherError::TimerDriverDurationOutOfRange.into()),
-                    }
-                }
-            }
-        };
-
-        let alarm_instant = now.num_ticks() as usize + ticks;
-
-        S::command(DRIVER_NUM, command::SET_RELATIVE, alarm_instant as u32, 0)
-            .to_result::<u32, ErrorCode>()?;
+        S::command(DRIVER_NUM, command::SET_RELATIVE, ticks.0, 0)
+            .to_result::<u32, ErrorCode>()
+            .map(|_when| ())?;
 
         Ok(())
     }
