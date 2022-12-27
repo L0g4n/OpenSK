@@ -35,7 +35,7 @@ use libtock_leds::Leds;
 use libtock_platform as platform;
 use libtock_platform::{ErrorCode, Syscalls};
 use persistent_store::{StorageResult, Store};
-use platform::{share, DefaultConfig};
+use platform::{share, DefaultConfig, Subscribe};
 use rng256::TockRng256;
 
 mod storage;
@@ -172,9 +172,9 @@ where
 
         // enable interrupts for all buttons
         let num_buttons = Buttons::<S>::count()?;
-        for n in 0..num_buttons {
-            Buttons::<S>::enable_interrupts(n)?;
-        }
+        (0..num_buttons)
+            .into_iter()
+            .try_for_each(|n| Buttons::<S>::enable_interrupts(n))?;
 
         let button_touched = Cell::new(false);
         let button_listener = ButtonListener(|_button_num, state| {
@@ -184,40 +184,57 @@ where
             };
         });
 
-        share::scope(|subscribe| Buttons::<S>::register_listener(&button_listener, subscribe))?;
-
-        // Setup a keep-alive callback.
+        // Setup a keep-alive callback but don't enable it yet
         let keepalive_expired = Cell::new(false);
-        let mut keepalive_callback = timer::with_callback::<S, C, _>(|_| {
-            keepalive_expired.set(true);
-        });
-        let mut keepalive = keepalive_callback.init().flex_unwrap();
-        keepalive
-            .set_alarm(timer::Duration::from_ms(timeout.integer() as isize))
-            .flex_unwrap();
+        let mut keepalive_callback =
+            timer::with_callback::<S, C, _>(|_| keepalive_expired.set(true));
+        share::scope::<
+            (
+                Subscribe<_, { libtock_buttons::DRIVER_NUM }, 0>,
+                Subscribe<
+                    S,
+                    { libtock_drivers::timer::DRIVER_NUM },
+                    { libtock_drivers::timer::subscribe::CALLBACK },
+                >,
+            ),
+            _,
+            _,
+        >(|handle| {
+            let (sub_button, sub_timer) = handle.split();
+            Buttons::<S>::register_listener(&button_listener, sub_button)?;
 
-        // Wait for a button touch or an alarm.
-        libtock_drivers::util::Util::<S>::yieldk_for(|| {
-            button_touched.get() || keepalive_expired.get()
-        });
+            let mut keepalive = keepalive_callback.init().flex_unwrap();
+            keepalive_callback.enable(sub_timer)?;
+            keepalive
+                .set_alarm(timer::Duration::from_ms(timeout.integer() as isize))
+                .flex_unwrap();
 
-        Buttons::<S>::unregister_listener();
-        // disable event interrupts for all buttons
-        for n in 0..num_buttons {
-            Buttons::<S>::disable_interrupts(n)?;
-        }
+            // Wait for a button touch or an alarm.
+            libtock_drivers::util::Util::<S>::yieldk_for(|| {
+                button_touched.get() || keepalive_expired.get()
+            });
 
-        // Cleanup alarm callback.
-        match keepalive.stop_alarm() {
-            Ok(()) => (),
-            Err(TockError::Command(ErrorCode::Already)) => assert!(keepalive_expired.get()),
-            Err(_e) => {
-                #[cfg(feature = "debug_ctap")]
-                panic!("Unexpected error when stopping alarm: {:?}", _e);
-                #[cfg(not(feature = "debug_ctap"))]
-                panic!("Unexpected error when stopping alarm: <error is only visible with the debug_ctap feature>");
+            Buttons::<S>::unregister_listener();
+
+            // disable event interrupts for all buttons
+            (0..num_buttons)
+                .into_iter()
+                .try_for_each(|n| Buttons::<S>::disable_interrupts(n))?;
+
+            // Cleanup alarm callback.
+            match keepalive.stop_alarm() {
+                Ok(()) => (),
+                Err(TockError::Command(ErrorCode::Already)) => assert!(keepalive_expired.get()),
+                Err(_e) => {
+                    #[cfg(feature = "debug_ctap")]
+                    panic!("Unexpected error when stopping alarm: {:?}", _e);
+                    #[cfg(not(feature = "debug_ctap"))]
+                    panic!("Unexpected error when stopping alarm: <error is only visible with the debug_ctap feature>");
+                }
             }
-        }
+
+            Ok::<(), UserPresenceError>(())
+        })?;
 
         if button_touched.get() {
             Ok(())
