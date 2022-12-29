@@ -135,10 +135,6 @@ fn main() {
     #[cfg(feature = "debug_ctap")]
     {
         writeln!(writer, "Hello world from ctap2!").ok().unwrap();
-        writeln!(writer, "Blinking LEDs with value of 2 as a test")
-            .ok()
-            .unwrap();
-        blink_leds::<SyscallImplementation>(2);
     }
 
     // Setup USB driver.
