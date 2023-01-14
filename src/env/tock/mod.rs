@@ -134,19 +134,19 @@ pub fn take_storage<S: Syscalls, C: platform::subscribe::Config + platform::allo
     #[cfg(not(target_has_atomic = "8"))]
     {
         static mut TAKEN: bool = false;
-        /// Safety
-        ///
-        /// We can not use an AtomicBool on platforms that do not support atomics,
-        /// such as the whole `riscv32i[mc]` family like OpenTitan.
-        /// Thus, we need to use a mutable static variable which are unsafe
-        /// cause they could cause a data race when two threads access it
-        /// at the same time.
-        ///
-        /// However, as we are running an application on TockOS and because
-        /// of its [architecture](https://www.tockos.org/documentation/design)
-        /// we are running in a single-threaded event loop which means the
-        /// aforementioned data race is impossible. Thus, in this case, the
-        /// usage of a static mut is safe.
+        // Safety
+        //
+        // We can not use an AtomicBool on platforms that do not support atomics,
+        // such as the whole `riscv32i[mc]` family like OpenTitan.
+        // Thus, we need to use a mutable static variable which are unsafe
+        // cause they could cause a data race when two threads access it
+        // at the same time.
+        //
+        // However, as we are running an application on TockOS and because
+        // of its [architecture](https://www.tockos.org/documentation/design)
+        // we are running in a single-threaded event loop which means the
+        // aforementioned data race is impossible. Thus, in this case, the
+        // usage of a static mut is safe.
         unsafe {
             assert!(!TAKEN);
             TAKEN = true;
