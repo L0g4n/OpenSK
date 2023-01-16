@@ -116,6 +116,27 @@ nrf52840dk_opensk_board = OpenSKBoard(
     nordic_dfu=False,
 )
 
+cw310_opensk_board = OpenSKBoard(
+    path="third_party/tock/boards/opentitan/earlgrey-cw310",
+    arch="riscv32imc-unknown-none-elf",
+    page_size=2048,
+    kernel_address=0,
+    padding_address=None,
+    firmware_size=None,
+    metadata_address=None,
+    app_ldscript="opentitan_layout.ld",
+    app_address=0x20030000, # TODO: address in flash where the app begins
+    storage_address=None,# TODO 
+    storage_size=None, # TODO
+    pyocd_target=None,
+    openocd_board=None,
+    openocd_options=[],
+    openocd_commands={},
+    jlink_if=None,
+    jlink_device=None,
+    nordic_dfu=False,
+)
+
 SUPPORTED_BOARDS = {
     "nrf52840dk_opensk":
         nrf52840dk_opensk_board,
@@ -154,6 +175,8 @@ SUPPORTED_BOARDS = {
             kernel_address=0x1000,
             nordic_dfu=True,
         ),
+    "cw310_opensk":
+        cw310_opensk_board,
 }
 
 # The following value must match the one used in the file
@@ -465,6 +488,9 @@ class OpenSKInstaller:
       command.extend(["--example", self.args.application])
     if self.args.verbose_build:
       command.append("--verbose")
+    print("BUILD CMD:", command)
+    print("RUST_FLAGS:", env["RUSTFLAGS"])
+    print("APP_HEAP_SIZE:", env["APP_HEAP_SIZE"])
     self.checked_command(command, env=env)
     app_path = os.path.join(CARGO_TARGET_DIR, props.arch, "release")
     if is_example:
@@ -536,6 +562,7 @@ class OpenSKInstaller:
         f"--stack={stack_sizes.pop()}", f"--app-heap={APP_HEAP_SIZE}",
         "--kernel-heap=1024", "--protected-region-size=96" 
     ])
+    print("ELF2TAB ARGS:", elf2tab_args)
     if self.args.elf2tab_output:
       output = self.checked_command_output(elf2tab_args)
       self.args.elf2tab_output.write(output)
