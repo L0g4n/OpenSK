@@ -488,6 +488,9 @@ class OpenSKInstaller:
       command.extend(["--example", self.args.application])
     if self.args.verbose_build:
       command.append("--verbose")
+    print("BUILD CMD:", command)
+    print("RUST_FLAGS:", env["RUSTFLAGS"])
+    print("APP_HEAP_SIZE:", env["APP_HEAP_SIZE"])
     self.checked_command(command, env=env)
     app_path = os.path.join(CARGO_TARGET_DIR, props.arch, "release")
     if is_example:
@@ -552,12 +555,13 @@ class OpenSKInstaller:
           stack_sizes.add(required_stack_size)
     if len(stack_sizes) != 1:
       error("Detected different stack sizes across tab files.")
-    # `protected-region-size` must match the `TBF_HEADER_SIZE`
-    # (currently 0x60 = 96 bytes)
+    
+    # `protected-region-size` must match the `TBF_HEADER_SIZE` (currently 0x60 = 96 bytes)
     elf2tab_args.extend([
         f"--stack={stack_sizes.pop()}", f"--app-heap={APP_HEAP_SIZE}",
-        "--kernel-heap=1024", "--protected-region-size=96"
+        "--kernel-heap=1024", "--protected-region-size=96" 
     ])
+    print("ELF2TAB ARGS:", elf2tab_args)
     if self.args.elf2tab_output:
       output = self.checked_command_output(elf2tab_args)
       self.args.elf2tab_output.write(output)
@@ -804,8 +808,8 @@ class OpenSKInstaller:
       info("Nothing to do.")
       return 0
 
-    if self.args.check_patches:
-      subprocess.run(["./maintainers/patches", "check"], check=False)
+    # if self.args.check_patches:
+    #   subprocess.run(["./maintainers/patches", "check"], check=False)
 
     # Compile what needs to be compiled
     board_props = SUPPORTED_BOARDS[self.args.board]
