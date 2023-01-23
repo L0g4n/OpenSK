@@ -117,7 +117,7 @@ nrf52840dk_opensk_board = OpenSKBoard(
 )
 
 cw310_opensk_board = OpenSKBoard(
-    path="third_party/tock/boards/opentitan/earlgrey-cw310",
+    path="third_party/tock/boards/opentitan_opensk/earlgrey-cw310-opensk",
     arch="riscv32imc-unknown-none-elf",
     page_size=2048,
     kernel_address=0,
@@ -181,7 +181,7 @@ SUPPORTED_BOARDS = {
 
 # The following value must match the one used in the file
 # `src/entry_point.rs`
-APP_HEAP_SIZE = 90_000
+APP_HEAP_SIZE = 20_000
 
 CARGO_TARGET_DIR = os.environ.get("CARGO_TARGET_DIR", "target")
 
