@@ -1,4 +1,4 @@
-//! Board file for LowRISC OpenTitan RISC-V development platform.
+//! Board file for LowRISC OpenTitan RISC-V development platform, adjusted for OpenSK.
 //!
 //! - <https://opentitan.org/>
 

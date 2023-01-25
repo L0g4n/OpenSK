@@ -6,7 +6,7 @@ index 2ead13eb3..4fb6d109d 100644
      "boards/nano_rp2040_connect",
      "boards/arty_e21",
      "boards/opentitan/earlgrey-cw310",
-+    "boards/opentitan_opensk/earlgrey-cw310-opensk",
++    "boards/opentitan/earlgrey-cw310-opensk",
      "boards/esp32-c3-devkitM-1",
      "boards/clue_nrf52840",
      "boards/hail",

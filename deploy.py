@@ -117,7 +117,7 @@ nrf52840dk_opensk_board = OpenSKBoard(
 )
 
 cw310_opensk_board = OpenSKBoard(
-    path="third_party/tock/boards/opentitan_opensk/earlgrey-cw310-opensk",
+    path="third_party/tock/boards/opentitan/earlgrey-cw310-opensk",
     arch="riscv32imc-unknown-none-elf",
     page_size=2048,
     kernel_address=0,
