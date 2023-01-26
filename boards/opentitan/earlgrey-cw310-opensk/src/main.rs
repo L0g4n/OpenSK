@@ -688,7 +688,7 @@ unsafe fn setup() -> (
         debug!("Error loading processes!");
         debug!("{:?}", err);
     });
-    debug!("OpenTitan initialisation complete. Entering main loop");
+    debug!("OpenTitan (w/ USB CTAP driver) initialisation complete. Entering main loop");
 
     (board_kernel, earlgrey, chip, peripherals)
 }
