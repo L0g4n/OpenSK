@@ -3,7 +3,7 @@ name = "earlgrey-cw310-opensk"
 version.workspace = true
 authors.workspace = true
 build = "build.rs"
-edition.workspace = true
+edition = "2021"
 
 [dependencies]
 components = { path = "../../components" }

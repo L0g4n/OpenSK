@@ -2,7 +2,7 @@
 
 DEFAULT_BOARD_CONFIGURATION=fpga_cw310
 TARGET=riscv32imc-unknown-none-elf
-PLATFORM=earlgrey-cw310
+PLATFORM=earlgrey-cw310-opensk
 FLASHID=--dev-id="0403:6010"
 RISC_PREFIX ?= $(TOOLCHAIN_PATH)/bin/riscv32-unknown-elf
 QEMU ?= ../../../tools/qemu/build/qemu-system-riscv32
