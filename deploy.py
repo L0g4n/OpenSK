@@ -488,9 +488,6 @@ class OpenSKInstaller:
       command.extend(["--example", self.args.application])
     if self.args.verbose_build:
       command.append("--verbose")
-    print("BUILD CMD:", command)
-    print("RUST_FLAGS:", env["RUSTFLAGS"])
-    print("APP_HEAP_SIZE:", env["APP_HEAP_SIZE"])
     self.checked_command(command, env=env)
     app_path = os.path.join(CARGO_TARGET_DIR, props.arch, "release")
     if is_example:
@@ -561,7 +558,6 @@ class OpenSKInstaller:
         f"--stack={stack_sizes.pop()}", f"--app-heap={APP_HEAP_SIZE}",
         "--kernel-heap=1024", "--protected-region-size=96" 
     ])
-    print("ELF2TAB ARGS:", elf2tab_args)
     if self.args.elf2tab_output:
       output = self.checked_command_output(elf2tab_args)
       self.args.elf2tab_output.write(output)
@@ -1206,6 +1202,12 @@ if __name__ == "__main__":
       action="store_const",
       const="ctap2",
       help="Compiles and installs the OpenSK application.")
+  apps_group.add_argument(
+      "--button_test",
+      dest="application",
+      action="store_const",
+      const="button_test",
+      help=("Compiles and installs the button_test example."))
   apps_group.add_argument(
       "--crypto_bench",
       dest="application",
