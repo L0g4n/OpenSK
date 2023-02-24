@@ -86,6 +86,9 @@ impl<S: Syscalls> TockEnv<S> {
     ///
     /// - If called a second time.
     pub fn new() -> Self {
+        if !storage::is_nvmc_available::<S>() {
+            panic!("Custom NVMC driver not available on this platform!");
+        }
         // We rely on `take_storage` to ensure that this function is called only once.
         let storage = take_storage().unwrap();
         let store = match Store::new(storage) {

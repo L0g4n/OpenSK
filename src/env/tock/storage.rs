@@ -38,6 +38,7 @@ mod subscribe_nr {
 }
 
 mod command_nr {
+    pub const CHECK: u32 = 0;
     pub const GET_INFO: u32 = 1;
     pub mod get_info_nr {
         pub const WORD_SIZE: u32 = 0;
@@ -63,6 +64,11 @@ mod memop_nr {
 mod storage_type {
     pub const STORE: u32 = 1;
     pub const PARTITION: u32 = 2;
+}
+
+pub fn is_nvmc_available<S: Syscalls>() -> bool {
+    let result = S::command(DRIVER_NUMBER, command_nr::CHECK, 0, 0).to_result::<(), ErrorCode>();
+    result.is_ok()
 }
 
 fn get_info<S: Syscalls>(nr: u32, arg: u32) -> StorageResult<u32> {
