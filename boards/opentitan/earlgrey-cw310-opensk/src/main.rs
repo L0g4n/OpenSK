@@ -26,7 +26,7 @@ use kernel::hil::rng::Rng;
 use kernel::hil::symmetric_encryption::AES128;
 use kernel::platform::mpu::KernelMPU;
 use kernel::platform::scheduler_timer::VirtualSchedulerTimer;
-use kernel::platform::{mpu, KernelResources, SyscallDriverLookup, TbfHeaderFilterDefaultAllow};
+use kernel::platform::{mpu, KernelResources, SyscallDriverLookup, SyscallFilter};
 use kernel::scheduler::priority::PrioritySched;
 use kernel::utilities::registers::interfaces::ReadWriteable;
 use kernel::{capabilities, create_capability, debug, hil, static_init};
@@ -96,8 +96,7 @@ static STRINGS: &'static [&'static str] = &[
 /// A structure representing this platform that holds references to all
 /// capsules for this platform. We've included an alarm and console.
 struct EarlGrey {
-    // TODO: add button driver
-    // buttons need to connect a physical button tho
+    button: &'static capsules::button::Button<'static, earlgrey::gpio::GpioPin<'static>>,
     led: &'static capsules::led::LedDriver<
         'static,
         LedHigh<'static, earlgrey::gpio::GpioPin<'static>>,
@@ -141,7 +140,6 @@ struct EarlGrey {
         'static,
         earlgrey::usbdev::Usb<'static>,
     >,
-    syscall_filter: &'static TbfHeaderFilterDefaultAllow,
     scheduler: &'static PrioritySched,
     scheduler_timer:
         &'static VirtualSchedulerTimer<VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>>,
@@ -155,6 +153,7 @@ impl SyscallDriverLookup for EarlGrey {
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
     {
         match driver_num {
+            capsules::button::DRIVER_NUM => f(Some(self.button)),
             capsules::led::DRIVER_NUM => f(Some(self.led)),
             capsules::hmac::DRIVER_NUM => f(Some(self.hmac)),
             capsules::sha::DRIVER_NUM => f(Some(self.sha)),
@@ -170,11 +169,32 @@ impl SyscallDriverLookup for EarlGrey {
     }
 }
 
+impl SyscallFilter for EarlGrey {
+    fn filter_syscall(
+        &self,
+        process: &dyn kernel::process::Process,
+        syscall: &kernel::syscall::Syscall,
+    ) -> Result<(), kernel::errorcode::ErrorCode> {
+        use kernel::syscall::Syscall;
+        match *syscall {
+            Syscall::Command {
+                driver_number: lowrisc::flash_ctrl::DRIVER_NUM,
+                subdriver_number: cmd,
+                arg0: ptr,
+                arg1: len,
+            } if (cmd == 2 || cmd == 3) && !process.fits_in_storage_location(ptr, len) => {
+                Err(kernel::ErrorCode::INVAL)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 impl KernelResources<earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripherals<'static>>>
     for EarlGrey
 {
     type SyscallDriverLookup = Self;
-    type SyscallFilter = TbfHeaderFilterDefaultAllow;
+    type SyscallFilter = Self;
     type ProcessFault = ();
     type CredentialsCheckingPolicy = ();
     type Scheduler = PrioritySched;
@@ -187,7 +207,7 @@ impl KernelResources<earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripheral
         &self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
-        &self.syscall_filter
+        &self
     }
     fn process_fault(&self) -> &Self::ProcessFault {
         &()
@@ -282,6 +302,22 @@ unsafe fn setup() -> (
         ),
     )
     .finalize(components::gpio_component_static!(earlgrey::gpio::GpioPin));
+
+    let button = components::button::ButtonComponent::new(
+        board_kernel,
+        capsules::button::DRIVER_NUM,
+        components::button_component_helper!(
+            earlgrey::gpio::GpioPin,
+            (
+                &peripherals.gpio_port[16], // FIXME: fix port number
+                kernel::hil::gpio::ActivationMode::ActiveLow,
+                kernel::hil::gpio::FloatingState::PullUp
+            ),
+        ),
+    )
+    .finalize(components::button_component_static!(
+        earlgrey::gpio::GpioPin
+    ));
 
     let hardware_alarm = static_init!(earlgrey::timer::RvTimer, earlgrey::timer::RvTimer::new());
     hardware_alarm.setup();
@@ -598,7 +634,6 @@ unsafe fn setup() -> (
         static _manifest: u8;
     }
 
-    let syscall_filter = static_init!(TbfHeaderFilterDefaultAllow, TbfHeaderFilterDefaultAllow {});
     let scheduler = components::sched::priority::PriorityComponent::new(board_kernel)
         .finalize(components::priority_component_static!());
     let watchdog = &peripherals.watchdog;
@@ -606,6 +641,7 @@ unsafe fn setup() -> (
     let earlgrey = static_init!(
         EarlGrey,
         EarlGrey {
+            button,
             gpio,
             led,
             console,
@@ -616,7 +652,6 @@ unsafe fn setup() -> (
             lldb,
             aes,
             usb,
-            syscall_filter,
             scheduler,
             scheduler_timer,
             watchdog,
