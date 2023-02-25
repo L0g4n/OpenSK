@@ -1,18 +1,18 @@
 diff --git a/boards/components/src/lib.rs b/boards/components/src/lib.rs
-index 92d45f7e3..51041545b 100644
+index 64b09d04b..69e551751 100644
 --- a/boards/components/src/lib.rs
 +++ b/boards/components/src/lib.rs
-@@ -64,3 +64,4 @@ pub mod tickv;
- pub mod touch;
+@@ -75,3 +75,4 @@ pub mod touch;
  pub mod udp_driver;
  pub mod udp_mux;
+ pub mod usb;
 +pub mod usb_ctap;
 diff --git a/boards/components/src/usb_ctap.rs b/boards/components/src/usb_ctap.rs
 new file mode 100644
-index 000000000..eed34a268
+index 000000000..b8e1f3244
 --- /dev/null
 +++ b/boards/components/src/usb_ctap.rs
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,85 @@
 +//! Component for CTAP over USB.
 +
 +use capsules::usb::usb_ctap::CtapUsbSyscallDriver;
@@ -25,17 +25,15 @@ index 000000000..eed34a268
 +
 +// Setup static space for the objects.
 +#[macro_export]
-+macro_rules! usb_ctap_component_helper {
++macro_rules! usb_ctap_component_static {
 +    ($C:ty $(,)?) => {{
 +        use capsules::usb::usb_ctap::CtapUsbSyscallDriver;
 +        use capsules::usb::usbc_ctap_hid::ClientCtapHID;
-+        use core::mem::MaybeUninit;
 +
-+        static mut hid: MaybeUninit<ClientCtapHID<'static, 'static, $C>> = MaybeUninit::uninit();
-+        static mut driver: MaybeUninit<CtapUsbSyscallDriver<'static, 'static, $C>> =
-+            MaybeUninit::uninit();
++        let hid = kernel::static_buf!(ClientCtapHID<'static, 'static, $C>);
++        let driver = kernel::static_buf!(CtapUsbSyscallDriver<'static, 'static, $C>);
 +
-+        (&mut hid, &mut driver)
++        (hid, driver)
 +    };};
 +}
 +
@@ -78,7 +76,7 @@ index 000000000..eed34a268
 +    );
 +    type Output = &'static CtapUsbSyscallDriver<'static, 'static, C>;
 +
-+    unsafe fn finalize(self, s: Self::StaticInput) -> Self::Output {
++    fn finalize(self, s: Self::StaticInput) -> Self::Output {
 +        let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
 +
 +        let usb_ctap = s.0.write(ClientCtapHID::new(
@@ -101,12 +99,12 @@ index 000000000..eed34a268
 +    }
 +}
 diff --git a/capsules/src/driver.rs b/capsules/src/driver.rs
-index f189dfd09..c48c7e094 100644
+index e640d0e18..415a0b680 100644
 --- a/capsules/src/driver.rs
 +++ b/capsules/src/driver.rs
-@@ -29,6 +29,8 @@ pub enum NUM {
-     UsbUser               = 0x20005,
+@@ -31,6 +31,8 @@ pub enum NUM {
      I2cMasterSlave        = 0x20006,
+     Can                   = 0x20007,
  
 +    UsbCtap               = 0x20009,
 +

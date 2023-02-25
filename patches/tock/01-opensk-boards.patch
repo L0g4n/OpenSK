@@ -1,5 +1,5 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 04cb39334..65d112bf8 100644
+index 4ca39f0f0..3d2dea251 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -12,6 +12,7 @@ members = [
@@ -10,7 +10,7 @@ index 04cb39334..65d112bf8 100644
      "boards/esp32-c3-devkitM-1",
      "boards/clue_nrf52840",
      "boards/hail",
-@@ -23,7 +24,13 @@ members = [
+@@ -24,7 +25,13 @@ members = [
      "boards/msp_exp432p401r",
      "boards/microbit_v2",
      "boards/nordic/nrf52840dk",
@@ -22,5 +22,5 @@ index 04cb39334..65d112bf8 100644
 +    "boards/nordic/nrf52840_dongle_dfu",
 +    "boards/nordic/nrf52840_mdk_dfu",
      "boards/nordic/nrf52dk",
+     "boards/sma_q3",
      "boards/nucleo_f429zi",
-     "boards/nucleo_f446re",
