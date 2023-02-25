@@ -52,10 +52,7 @@ fn run_aes128_ecb() {
         aes.set_client(t);
 
         #[cfg(feature = "hardware_tests")]
-        {
-            while !aes.idle() {}
-            t.run();
-        }
+        t.run();
     }
     run_kernel_op(1000);
     debug!("    [ok]");
@@ -86,10 +83,7 @@ fn run_aes128_cbc() {
         aes.set_client(t);
 
         #[cfg(feature = "hardware_tests")]
-        {
-            while !aes.idle() {}
-            t.run();
-        }
+        t.run();
     }
     run_kernel_op(1000);
     debug!("    [ok]");
@@ -121,10 +115,7 @@ fn run_aes128_ctr() {
         aes.set_client(t);
 
         #[cfg(feature = "hardware_tests")]
-        {
-            while !aes.idle() {}
-            t.run();
-        }
+        t.run();
     }
     run_kernel_op(1000);
     debug!("    [ok]");
