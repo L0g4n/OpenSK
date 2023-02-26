@@ -29,7 +29,8 @@ use kernel::hil::rng::Rng;
 use kernel::hil::symmetric_encryption::AES128;
 use kernel::platform::mpu::KernelMPU;
 use kernel::platform::scheduler_timer::VirtualSchedulerTimer;
-use kernel::platform::{mpu, KernelResources, SyscallDriverLookup, TbfHeaderFilterDefaultAllow};
+use kernel::platform::SyscallFilter;
+use kernel::platform::{mpu, KernelResources, SyscallDriverLookup};
 use kernel::scheduler::priority::PrioritySched;
 use kernel::utilities::registers::interfaces::ReadWriteable;
 use kernel::{capabilities, create_capability, debug, hil, static_init};
@@ -94,10 +95,10 @@ const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::Panic
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
 // TODO:
-// 1. add custom USB CTAP driver
-// 2. add custon NVMC driver port
-// 3. add storage locations in here (see nordic examples)
-// 4. add custom buttom(-ish) driver
+// remove unwanted drivers (like AES and SPI)
+// add custon NVMC driver port
+// add storage locations in here (see nordic examples)
+// add custom buttom(-ish) driver
 
 const VENDOR_ID: u16 = 0x2B3E; // NewAE Technology Inc.
 const PRODUCT_ID: u16 = 0xC310; // CW310
@@ -165,7 +166,6 @@ struct EarlGrey {
         >,
         [u8; 8],
     >,
-    syscall_filter: &'static TbfHeaderFilterDefaultAllow,
     scheduler: &'static PrioritySched,
     scheduler_timer:
         &'static VirtualSchedulerTimer<VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>>,
@@ -196,11 +196,32 @@ impl SyscallDriverLookup for EarlGrey {
     }
 }
 
+impl SyscallFilter for EarlGrey {
+    fn filter_syscall(
+        &self,
+        process: &dyn kernel::process::Process,
+        syscall: &kernel::syscall::Syscall,
+    ) -> Result<(), kernel::errorcode::ErrorCode> {
+        use kernel::syscall::Syscall;
+        match *syscall {
+            Syscall::Command {
+                driver_number: lowrisc::flash_ctrl::DRIVER_NUM,
+                subdriver_number: cmd,
+                arg0: ptr,
+                arg1: len,
+            } if (cmd == 2 || cmd == 3) && !process.fits_in_storage_location(ptr, len) => {
+                Err(kernel::ErrorCode::INVAL)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 impl KernelResources<earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripherals<'static>>>
     for EarlGrey
 {
     type SyscallDriverLookup = Self;
-    type SyscallFilter = TbfHeaderFilterDefaultAllow;
+    type SyscallFilter = Self;
     type ProcessFault = ();
     type CredentialsCheckingPolicy = ();
     type Scheduler = PrioritySched;
@@ -213,7 +234,7 @@ impl KernelResources<earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripheral
         &self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
-        &self.syscall_filter
+        &self
     }
     fn process_fault(&self) -> &Self::ProcessFault {
         &()
@@ -716,7 +737,6 @@ unsafe fn setup() -> (
         static _manifest: u8;
     }
 
-    let syscall_filter = static_init!(TbfHeaderFilterDefaultAllow, TbfHeaderFilterDefaultAllow {});
     let scheduler = components::sched::priority::PriorityComponent::new(board_kernel)
         .finalize(components::priority_component_static!());
     let watchdog = &peripherals.watchdog;
@@ -736,7 +756,6 @@ unsafe fn setup() -> (
             spi_controller,
             aes,
             kv_driver,
-            syscall_filter,
             scheduler,
             scheduler_timer,
             watchdog,
