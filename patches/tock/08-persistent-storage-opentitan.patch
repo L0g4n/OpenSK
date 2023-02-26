@@ -1,0 +1,348 @@
+diff --git a/chips/lowrisc/src/flash_ctrl.rs b/chips/lowrisc/src/flash_ctrl.rs
+index 7392c4da8..fbc620232 100644
+--- a/chips/lowrisc/src/flash_ctrl.rs
++++ b/chips/lowrisc/src/flash_ctrl.rs
+@@ -2,15 +2,24 @@
+ 
+ use core::cell::Cell;
+ use core::ops::{Index, IndexMut};
++use kernel::dynamic_deferred_call::{
++    DeferredCallHandle, DynamicDeferredCall, DynamicDeferredCallClient,
++};
++use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
+ use kernel::hil;
++use kernel::hil::flash::Flash;
++use kernel::processbuffer::ReadableProcessBuffer;
++use kernel::syscall::CommandReturn;
+ use kernel::utilities::cells::OptionalCell;
+ use kernel::utilities::cells::TakeCell;
++use kernel::utilities::cells::VolatileCell;
+ use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
+ use kernel::utilities::registers::{
+     register_bitfields, register_structs, ReadOnly, ReadWrite, WriteOnly,
+ };
+ use kernel::utilities::StaticRef;
+ use kernel::ErrorCode;
++use kernel::ProcessId;
+ 
+ register_structs! {
+     pub FlashCtrlRegisters {
+@@ -282,6 +291,14 @@ pub const FLASH_MP_MAX_CFGS: usize = 8;
+ pub const FLASH_PROG_WINDOW_SIZE: usize = 16;
+ pub const FLASH_PROG_WINDOW_MASK: u32 = 0xFFFFFFF0;
+ 
++// added for custom flash driver
++type WORD = u32;
++const WORD_SIZE: usize = core::mem::size_of::<WORD>();
++const MAX_WORD_WRITES: u32 = 2;
++const MAX_PAGE_ERASES: u32 = 10_000;
++const WORD_MASK: usize = WORD_SIZE - 1;
++const PAGE_MASK: usize = PAGE_SIZE - 1;
++
+ pub struct LowRiscPage(pub [u8; PAGE_SIZE as usize]);
+ 
+ /// Defines region permissions for flash memory protection.
+@@ -1138,3 +1155,303 @@ impl hil::flash::Flash for FlashCtrl<'_> {
+         Ok(())
+     }
+ }
++
++/// Provides access to the writeable flash regions of the application.
++///
++/// The purpose of this driver is to provide low-level access to the embedded flash of nRF52 boards
++/// to allow applications to implement flash-aware (like wear-leveling) data-structures. The driver
++/// only permits applications to operate on their writeable flash regions. The API is blocking since
++/// the CPU is halted during write and erase operations.
++///
++/// # Syscalls
++///
++/// - SUBSCRIBE(0, done): The callback for COMMAND(2) and COMMAND(3).
++/// - COMMAND(0): Check the driver.
++/// - COMMAND(1, 0): Get the word size (always 8).
++/// - COMMAND(1, 1): Get the page size (always 2048).
++/// - COMMAND(1, 2): Get the maximum number of word writes between page erasures (always 2).
++/// - COMMAND(1, 3): Get the maximum number page erasures in the lifetime of the flash (always
++///     10000).
++/// - COMMAND(2, ptr, len): Write the allow slice to the flash region starting at `ptr`.
++///   - `ptr` must be word-aligned.
++///   - The allow slice length must be word aligned.
++///   - The region starting at `ptr` of the same length as the allow slice must be in a writeable
++///     flash region.
++/// - COMMAND(3, ptr, len): Erase a page.
++///   - `ptr` must be page-aligned.
++///   - The page starting at `ptr` must be in a writeable flash region.
++/// - ALLOW(0): The allow slice for COMMAND(2).
++pub struct NvmcDriver {
++    flash_ctrl: &'static FlashCtrl<'static>,
++    apps: NvmcDriverGrant,
++    waiting: OptionalCell<ProcessId>,
++    deferred_caller: &'static DynamicDeferredCall,
++    deferred_handle: OptionalCell<DeferredCallHandle>,
++    buffer: TakeCell<'static, [u8]>,
++}
++
++type NvmcDriverGrant = Grant<App, UpcallCount<1>, AllowRoCount<1>, AllowRwCount<0>>;
++
++pub const DRIVER_NUM: usize = 0x50_003;
++
++#[derive(Default)]
++pub struct App {}
++
++fn is_write_needed(old: WORD, new: WORD) -> bool {
++    // No need to write if it would not modify the current value.
++    old & new != old
++}
++
++impl NvmcDriver {
++    pub fn new(
++        flash_ctrl: &'static FlashCtrl<'static>,
++        apps: NvmcDriverGrant,
++        deferred_caller: &'static DynamicDeferredCall,
++        buffer: &'static mut [u8],
++    ) -> Self {
++        Self {
++            flash_ctrl,
++            apps,
++            waiting: OptionalCell::empty(),
++            deferred_caller,
++            deferred_handle: OptionalCell::empty(),
++            buffer: TakeCell::new(buffer),
++        }
++    }
++
++    pub fn set_deferred_handle(&self, handle: DeferredCallHandle) {
++        self.deferred_handle.replace(handle);
++    }
++
++    /// Writes a word-aligned slice at a word-aligned address.
++    ///
++    /// Words are written only if necessary, i.e. if writing the new value would change the current
++    /// value. This can be used to simplify recovery operations (e.g. if power is lost during a
++    /// write operation). The application doesn't need to check which prefix has already been
++    /// written and may repeat the complete write that was interrupted.
++    ///
++    /// # Safety
++    ///
++    /// The words in this range must have been written less than `MAX_WORD_WRITES` since their last
++    /// page erasure.
++    ///
++    /// # Errors
++    ///
++    /// Fails with `EINVAL` if any of the following conditions does not hold:
++    /// - `ptr` must be word-aligned.
++    /// - `slice.len()` must be word-aligned.
++    /// - The slice starting at `ptr` of length `slice.len()` must fit in the storage.
++    fn write_slice(&self, ptr: usize, slice: &[u8]) -> CommandReturn {
++        if ptr & WORD_MASK != 0 || slice.len() & WORD_MASK != 0 {
++            return CommandReturn::failure(ErrorCode::INVAL);
++        }
++
++        // check if the controller is ready
++        if !self
++            .flash_ctrl
++            .registers
++            .ctrl_regwen
++            .is_set(CTRL_REGWEN::EN)
++        {
++            return CommandReturn::failure(ErrorCode::BUSY);
++        }
++
++        if !self.flash_ctrl.info_configured.get() {
++            // The info partitions have no default access. Specifically set up a region.
++            if let Err(e) = self
++                .flash_ctrl
++                .configure_info_partition(FlashBank::BANK1, self.flash_ctrl.region_num)
++            {
++                return CommandReturn::failure(e);
++            }
++        }
++
++        if !self.flash_ctrl.data_configured.get() {
++            // If we aren't configured yet, configure now
++            if let Err(e) = self
++                .flash_ctrl
++                .configure_data_partition(self.flash_ctrl.region_num)
++            {
++                return CommandReturn::failure(e);
++            }
++        }
++
++        let words_to_write = slice.len() / WORD_SIZE;
++        // FIXME: loop programming operatings if words are ACROSS programming windows, i.e. more than 16 words are written
++        // See: https://docs.opentitan.org/hw/ip/flash_ctrl/doc/#program-resolution
++        // This can be fixed by dividing the program operations into tranches, i.e. always 16 words at the time, and then
++        // start the programming operation (in a loop)
++        if words_to_write > FLASH_PROG_WINDOW_SIZE {
++            kernel::debug!("tried to write man than 16 words, not supported ATM!");
++            return CommandReturn::failure(ErrorCode::NOSUPPORT);
++        }
++
++        let transaction_word_len = self
++            .flash_ctrl
++            .calculate_max_prog_len(ptr as u32, slice.len() as u32);
++
++        // Specify the address of the first flash word to read
++        self.flash_ctrl
++            .registers
++            .addr
++            .write(ADDR::START.val(ptr as u32));
++
++        // configure the registers
++        self.flash_ctrl.registers.control.write(
++            CONTROL::OP::PROG // flash operation = PROGRAM
++                + CONTROL::PARTITION_SEL::DATA // choose the data partition
++                + CONTROL::INFO_SEL::CLEAR
++                + CONTROL::NUM.val(transaction_word_len - 1) // number of total flash words to operate on, minus one according to documentation
++                + CONTROL::START::CLEAR, // don't start the operation yet
++        );
++
++        // // Reset the write index
++        // self.flash_ctrl.write_index.set(0);
++
++        // Start the flash transaction
++        self.flash_ctrl
++            .registers
++            .control
++            .modify(CONTROL::START::SET);
++
++        for (i, chunk) in slice.chunks(WORD_SIZE).enumerate() {
++            // `unwrap` cannot fail because `slice.len()` is word-aligned (see above).
++            let val = WORD::from_ne_bytes(<[u8; WORD_SIZE]>::try_from(chunk).unwrap());
++            let loc = unsafe { &*(ptr as *const VolatileCell<u32>).add(i) };
++
++            if is_write_needed(loc.get(), val) {
++                loc.set(val);
++                // program the flash controllers fifo with the word
++                self.flash_ctrl.registers.prog_fifo.set(val);
++            }
++        }
++
++        // we need to block until the erase is done
++        // this register is set to 1 by the hardware when the operation is done
++        while !self
++            .flash_ctrl
++            .registers
++            .ctrl_regwen
++            .is_set(CTRL_REGWEN::EN)
++        {}
++
++        self.deferred_handle
++            .map(|handle| self.deferred_caller.set(*handle));
++        return CommandReturn::success();
++    }
++
++    /// Erases a page at a page-aligned address.
++    ///
++    /// # Errors
++    ///
++    /// Fails with `EINVAL` if any of the following conditions does not hold:
++    /// - `ptr` must be page-aligned.
++    /// - The slice starting at `ptr` of length `PAGE_SIZE` must fit in the storage.
++    fn erase_page(&self, ptr: usize) -> CommandReturn {
++        if ptr & PAGE_MASK != 0 {
++            return CommandReturn::failure(ErrorCode::INVAL);
++        }
++        let _ = self.flash_ctrl.erase_page(ptr / PAGE_SIZE);
++
++        // we need to block until the erase is done
++        // this register is set to 1 by the hardware when the operation is done
++        while !self
++            .flash_ctrl
++            .registers
++            .ctrl_regwen
++            .is_set(CTRL_REGWEN::EN)
++        {}
++
++        self.deferred_handle
++            .map(|handle| self.deferred_caller.set(*handle));
++        CommandReturn::success()
++    }
++}
++
++impl DynamicDeferredCallClient for NvmcDriver {
++    fn call(&self, _handle: DeferredCallHandle) {
++        self.waiting.take().map(|process_id| {
++            self.apps.enter(process_id, |_, kernel_data| {
++                kernel_data.schedule_upcall(0, (0, 0, 0))
++            })
++        });
++    }
++}
++
++impl kernel::syscall::SyscallDriver for NvmcDriver {
++    fn allocate_grant(&self, process_id: ProcessId) -> Result<(), kernel::process::Error> {
++        self.apps.enter(process_id, |_, _| {})
++    }
++
++    fn command(
++        &self,
++        command_num: usize,
++        r2: usize,
++        r3: usize,
++        process_id: ProcessId,
++    ) -> CommandReturn {
++        match (command_num, r2, r3) {
++            (0, _, _) => CommandReturn::success(),
++
++            (1, 0, _) => CommandReturn::success_u32(WORD_SIZE.try_into().unwrap()),
++            (1, 1, _) => CommandReturn::success_u32(PAGE_SIZE.try_into().unwrap()),
++            (1, 2, _) => CommandReturn::success_u32(MAX_WORD_WRITES),
++            (1, 3, _) => CommandReturn::success_u32(MAX_PAGE_ERASES),
++            (1, _, _) => CommandReturn::failure(ErrorCode::INVAL),
++
++            (2, ptr, _len) => self
++                .apps
++                .enter(process_id, |_, kernel| {
++                    kernel
++                        .get_readonly_processbuffer(0)
++                        .and_then(|processbuffer| {
++                            processbuffer.enter(|app_buf| {
++                                // Copy contents to the internal buffer first
++                                self.buffer.take().map_or(
++                                    CommandReturn::failure(ErrorCode::RESERVE),
++                                    |buffer| {
++                                        // as the drivers buffer can be bigger than the app buffer,
++                                        // we choose the minimum to not copy anymore than we need
++                                        let len = core::cmp::min(buffer.len(), app_buf.len());
++
++                                        // safety check when the app buffer is too large
++                                        if app_buf.len() > buffer.len() {
++                                            return CommandReturn::failure(ErrorCode::INVAL);
++                                        }
++
++                                        let d = &app_buf[0..len];
++                                        for (i, v) in buffer.as_mut()[0..len].iter_mut().enumerate()
++                                        {
++                                            *v = d[i].get();
++                                        }
++
++                                        if self.waiting.is_some() {
++                                            return CommandReturn::failure(ErrorCode::BUSY);
++                                        }
++                                        self.waiting.set(process_id);
++                                        let result = self.write_slice(ptr, &buffer[0..len]);
++                                        self.buffer.replace(buffer);
++                                        result
++                                    },
++                                )
++                            })
++                        })
++                        .unwrap_or(CommandReturn::failure(ErrorCode::RESERVE))
++                })
++                .unwrap_or_else(|e| CommandReturn::failure(e.into())),
++
++            (3, ptr, len) => {
++                if len != PAGE_SIZE {
++                    return CommandReturn::failure(ErrorCode::INVAL);
++                }
++                if self.waiting.is_some() {
++                    return CommandReturn::failure(ErrorCode::BUSY);
++                }
++                self.waiting.set(process_id);
++                self.erase_page(ptr)
++            }
++
++            _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
++        }
++    }
++}
