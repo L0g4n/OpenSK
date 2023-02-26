@@ -170,6 +170,11 @@ struct EarlGrey {
     scheduler_timer:
         &'static VirtualSchedulerTimer<VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>>,
     watchdog: &'static lowrisc::aon_timer::AonTimer,
+    usb: &'static capsules::usb::usb_ctap::CtapUsbSyscallDriver<
+        'static,
+        'static,
+        earlgrey::usbdev::Usb<'static>,
+    >,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -191,6 +196,7 @@ impl SyscallDriverLookup for EarlGrey {
             capsules::rng::DRIVER_NUM => f(Some(self.rng)),
             capsules::symmetric_encryption::aes::DRIVER_NUM => f(Some(self.aes)),
             capsules::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
+            capsules::usb::usb_ctap::DRIVER_NUM => f(Some(self.usb)),
             _ => f(None),
         }
     }
@@ -476,6 +482,20 @@ unsafe fn setup() -> (
         .finalize(components::process_printer_text_component_static!());
     PROCESS_PRINTER = Some(process_printer);
 
+    // Configure USB controller
+    let usb = components::usb_ctap::UsbCtapComponent::new(
+        board_kernel,
+        capsules::usb::usb_ctap::DRIVER_NUM,
+        &peripherals.usb,
+        capsules::usb::usbc_client::MAX_CTRL_PACKET_SIZE_EARLGREY,
+        VENDOR_ID,
+        PRODUCT_ID,
+        STRINGS,
+    )
+    .finalize(components::usb_ctap_component_static!(
+        earlgrey::usbdev::Usb
+    ));
+
     // USB support is currently broken in the OpenTitan hardware
     // See https://github.com/lowRISC/opentitan/issues/2598 for more details
     // let usb = components::usb::UsbComponent::new(
@@ -759,6 +779,7 @@ unsafe fn setup() -> (
             scheduler,
             scheduler_timer,
             watchdog,
+            usb,
         }
     );
 
