@@ -89,15 +89,18 @@ static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText>
 // How should the kernel respond when a process faults.
 const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
 
+/// Flash buffer for the custom nvmc driver
+static mut APP_FLASH_BUFFER: [u8; 512] = [0; 512];
+
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
 // TODO:
-// remove unwanted drivers (like AES and SPI)
-// add custon NVMC driver port
+// remove unwanted drivers (like AES, SPI, and TickV)
 // add storage locations in here (see nordic examples)
+// modify OT layout file (for persistent storage pages)
 // add custom buttom(-ish) driver
 
 const VENDOR_ID: u16 = 0x2B3E; // NewAE Technology Inc.
@@ -170,6 +173,7 @@ struct EarlGrey {
     scheduler_timer:
         &'static VirtualSchedulerTimer<VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>>,
     watchdog: &'static lowrisc::aon_timer::AonTimer,
+    nvmc: &'static lowrisc::flash_ctrl::NvmcDriver,
     usb: &'static capsules::usb::usb_ctap::CtapUsbSyscallDriver<
         'static,
         'static,
@@ -196,6 +200,7 @@ impl SyscallDriverLookup for EarlGrey {
             capsules::rng::DRIVER_NUM => f(Some(self.rng)),
             capsules::symmetric_encryption::aes::DRIVER_NUM => f(Some(self.aes)),
             capsules::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
+            lowrisc::flash_ctrl::DRIVER_NUM => f(Some(self.nvmc)),
             capsules::usb::usb_ctap::DRIVER_NUM => f(Some(self.usb)),
             _ => f(None),
         }
@@ -481,6 +486,21 @@ unsafe fn setup() -> (
     let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
         .finalize(components::process_printer_text_component_static!());
     PROCESS_PRINTER = Some(process_printer);
+
+    let nvmc = static_init!(
+        lowrisc::flash_ctrl::NvmcDriver,
+        lowrisc::flash_ctrl::NvmcDriver::new(
+            &peripherals.flash_ctrl,
+            board_kernel.create_grant(lowrisc::flash_ctrl::DRIVER_NUM, &memory_allocation_cap,),
+            dynamic_deferred_caller,
+            &mut APP_FLASH_BUFFER,
+        )
+    );
+    nvmc.set_deferred_handle(
+        dynamic_deferred_caller
+            .register(nvmc)
+            .expect("no deferred call slot available for nvmc"),
+    );
 
     // Configure USB controller
     let usb = components::usb_ctap::UsbCtapComponent::new(
@@ -779,6 +799,7 @@ unsafe fn setup() -> (
             scheduler,
             scheduler_timer,
             watchdog,
+            nvmc,
             usb,
         }
     );
