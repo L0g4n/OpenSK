@@ -10,9 +10,7 @@
 #![test_runner(test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-use crate::hil::symmetric_encryption::AES128_BLOCK_SIZE;
 use crate::otbn::OtbnComponent;
-use capsules::virtual_aes_ccm;
 use capsules::virtual_alarm::{MuxAlarm, VirtualMuxAlarm};
 use capsules::virtual_hmac::VirtualMuxHmac;
 use capsules::virtual_sha::VirtualMuxSha;
@@ -21,16 +19,11 @@ use kernel::component::Component;
 use kernel::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClientState};
 use kernel::hil::digest::Digest;
 use kernel::hil::entropy::Entropy32;
-use kernel::hil::hasher::Hasher;
-use kernel::hil::i2c::I2CMaster;
-use kernel::hil::kv_system::KVSystem;
 use kernel::hil::led::LedHigh;
 use kernel::hil::rng::Rng;
-use kernel::hil::symmetric_encryption::AES128;
 use kernel::platform::mpu::KernelMPU;
 use kernel::platform::scheduler_timer::VirtualSchedulerTimer;
-use kernel::platform::SyscallFilter;
-use kernel::platform::{mpu, KernelResources, SyscallDriverLookup};
+use kernel::platform::{mpu, KernelResources, SyscallDriverLookup, SyscallFilter};
 use kernel::scheduler::priority::PrioritySched;
 use kernel::utilities::registers::interfaces::ReadWriteable;
 use kernel::{capabilities, create_capability, debug, hil, static_init};
@@ -63,19 +56,6 @@ static mut PLATFORM: Option<&'static EarlGrey> = None;
 static mut MAIN_CAP: Option<&dyn kernel::capabilities::MainLoopCapability> = None;
 // Test access to alarm
 static mut ALARM: Option<&'static MuxAlarm<'static, earlgrey::timer::RvTimer<'static>>> = None;
-// Test access to TicKV
-static mut TICKV: Option<
-    &capsules::tickv::TicKVStore<
-        'static,
-        capsules::virtual_flash::FlashUser<'static, lowrisc::flash_ctrl::FlashCtrl<'static>>,
-        capsules::sip_hash::SipHasher24<'static>,
-    >,
-> = None;
-// Test access to AES CCM
-static mut AES: Option<&virtual_aes_ccm::VirtualAES128CCM<'static, earlgrey::aes::Aes<'static>>> =
-    None;
-// Test access to SipHash
-static mut SIPHASH: Option<&capsules::sip_hash::SipHasher24<'static>> = None;
 // Test access to RSA
 static mut RSA_HARDWARE: Option<&lowrisc::rsa::OtbnRsa<'static>> = None;
 
@@ -98,7 +78,6 @@ static mut APP_FLASH_BUFFER: [u8; 512] = [0; 512];
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
 // TODO:
-// remove unwanted drivers (like AES, SPI, and TickV)
 // add storage locations in here (see nordic examples)
 // modify OT layout file (for persistent storage pages)
 // add custom buttom(-ish) driver
@@ -150,25 +129,7 @@ struct EarlGrey {
         'static,
         capsules::virtual_uart::UartDevice<'static>,
     >,
-    i2c_master: &'static capsules::i2c_master::I2CMasterDriver<'static, lowrisc::i2c::I2c<'static>>,
-    spi_controller: &'static capsules::spi_controller::Spi<
-        'static,
-        capsules::virtual_spi::VirtualSpiMasterDevice<'static, lowrisc::spi_host::SpiHost>,
-    >,
     rng: &'static capsules::rng::RngDriver<'static>,
-    aes: &'static capsules::symmetric_encryption::aes::AesDriver<
-        'static,
-        virtual_aes_ccm::VirtualAES128CCM<'static, earlgrey::aes::Aes<'static>>,
-    >,
-    kv_driver: &'static capsules::kv_driver::KVSystemDriver<
-        'static,
-        capsules::tickv::TicKVStore<
-            'static,
-            capsules::virtual_flash::FlashUser<'static, lowrisc::flash_ctrl::FlashCtrl<'static>>,
-            capsules::sip_hash::SipHasher24<'static>,
-        >,
-        [u8; 8],
-    >,
     scheduler: &'static PrioritySched,
     scheduler_timer:
         &'static VirtualSchedulerTimer<VirtualMuxAlarm<'static, earlgrey::timer::RvTimer<'static>>>,
@@ -195,11 +156,7 @@ impl SyscallDriverLookup for EarlGrey {
             capsules::console::DRIVER_NUM => f(Some(self.console)),
             capsules::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules::low_level_debug::DRIVER_NUM => f(Some(self.lldb)),
-            capsules::i2c_master::DRIVER_NUM => f(Some(self.i2c_master)),
-            capsules::spi_controller::DRIVER_NUM => f(Some(self.spi_controller)),
             capsules::rng::DRIVER_NUM => f(Some(self.rng)),
-            capsules::symmetric_encryption::aes::DRIVER_NUM => f(Some(self.aes)),
-            capsules::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
             lowrisc::flash_ctrl::DRIVER_NUM => f(Some(self.nvmc)),
             capsules::usb::usb_ctap::DRIVER_NUM => f(Some(self.usb)),
             _ => f(None),
@@ -451,38 +408,6 @@ unsafe fn setup() -> (
 
     digest.set_sha_client(sha);
 
-    let i2c_master = static_init!(
-        capsules::i2c_master::I2CMasterDriver<'static, lowrisc::i2c::I2c<'static>>,
-        capsules::i2c_master::I2CMasterDriver::new(
-            &peripherals.i2c0,
-            &mut capsules::i2c_master::BUF,
-            board_kernel.create_grant(capsules::i2c_master::DRIVER_NUM, &memory_allocation_cap)
-        )
-    );
-
-    peripherals.i2c0.set_master_client(i2c_master);
-
-    //SPI
-    let mux_spi =
-        components::spi::SpiMuxComponent::new(&peripherals.spi_host0, dynamic_deferred_caller)
-            .finalize(components::spi_mux_component_static!(
-                lowrisc::spi_host::SpiHost
-            ));
-
-    let spi_controller = components::spi::SpiSyscallComponent::new(
-        board_kernel,
-        mux_spi,
-        0,
-        capsules::spi_controller::DRIVER_NUM,
-    )
-    .finalize(components::spi_syscall_component_static!(
-        lowrisc::spi_host::SpiHost
-    ));
-
-    peripherals.aes.initialise(
-        dynamic_deferred_caller.register(&peripherals.aes).unwrap(), // Unwrap fail = dynamic deferred caller out of slots
-    );
-
     let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
         .finalize(components::process_printer_text_component_static!());
     PROCESS_PRINTER = Some(process_printer);
@@ -559,84 +484,6 @@ unsafe fn setup() -> (
         }
     }
 
-    // Flash
-    let flash_ctrl_read_buf = static_init!(
-        [u8; lowrisc::flash_ctrl::PAGE_SIZE],
-        [0; lowrisc::flash_ctrl::PAGE_SIZE]
-    );
-    let page_buffer = static_init!(
-        lowrisc::flash_ctrl::LowRiscPage,
-        lowrisc::flash_ctrl::LowRiscPage::default()
-    );
-
-    let mux_flash = components::flash::FlashMuxComponent::new(&peripherals.flash_ctrl).finalize(
-        components::flash_mux_component_static!(lowrisc::flash_ctrl::FlashCtrl),
-    );
-
-    // SipHash
-    let sip_hash = static_init!(
-        capsules::sip_hash::SipHasher24,
-        capsules::sip_hash::SipHasher24::new(dynamic_deferred_caller)
-    );
-    sip_hash.initialise(
-        dynamic_deferred_caller
-            .register(sip_hash)
-            .expect("dynamic deferred caller out of slots for sip_hash"),
-    );
-    SIPHASH = Some(sip_hash);
-
-    // TicKV
-    let tickv = components::tickv::TicKVComponent::new(
-        sip_hash,
-        &mux_flash,                                    // Flash controller
-        lowrisc::flash_ctrl::FLASH_PAGES_PER_BANK - 1, // Region offset (End of Bank0/Use Bank1)
-        // Region Size
-        lowrisc::flash_ctrl::FLASH_PAGES_PER_BANK * lowrisc::flash_ctrl::PAGE_SIZE,
-        flash_ctrl_read_buf, // Buffer used internally in TicKV
-        page_buffer,         // Buffer used with the flash controller
-    )
-    .finalize(components::tickv_component_static!(
-        lowrisc::flash_ctrl::FlashCtrl,
-        capsules::sip_hash::SipHasher24
-    ));
-    hil::flash::HasClient::set_client(&peripherals.flash_ctrl, mux_flash);
-    sip_hash.set_client(tickv);
-    TICKV = Some(tickv);
-
-    let mux_kv = components::kv_system::KVStoreMuxComponent::new(tickv).finalize(
-        components::kv_store_mux_component_static!(
-            capsules::tickv::TicKVStore<
-                capsules::virtual_flash::FlashUser<lowrisc::flash_ctrl::FlashCtrl>,
-                capsules::sip_hash::SipHasher24<'static>,
-            >,
-            capsules::tickv::TicKVKeyType,
-        ),
-    );
-
-    let kv_store = components::kv_system::KVStoreComponent::new(mux_kv).finalize(
-        components::kv_store_component_static!(
-            capsules::tickv::TicKVStore<
-                capsules::virtual_flash::FlashUser<lowrisc::flash_ctrl::FlashCtrl>,
-                capsules::sip_hash::SipHasher24<'static>,
-            >,
-            capsules::tickv::TicKVKeyType,
-        ),
-    );
-    tickv.set_client(kv_store);
-
-    let kv_driver = components::kv_system::KVDriverComponent::new(
-        kv_store,
-        board_kernel,
-        capsules::kv_driver::DRIVER_NUM,
-    )
-    .finalize(components::kv_driver_component_static!(
-        capsules::tickv::TicKVStore<
-            capsules::virtual_flash::FlashUser<lowrisc::flash_ctrl::FlashCtrl>,
-            capsules::sip_hash::SipHasher24<'static>,
-        >,
-        capsules::tickv::TicKVKeyType,
-    ));
-
     let mux_otbn = crate::otbn::AccelMuxComponent::new(&peripherals.otbn)
         .finalize(otbn_mux_component_static!());
 
@@ -689,46 +536,6 @@ unsafe fn setup() -> (
     );
     entropy_to_random.set_client(rng);
 
-    const CRYPT_SIZE: usize = 7 * AES128_BLOCK_SIZE;
-
-    let aes_source_buffer = static_init!([u8; 16], [0; 16]);
-    let aes_dest_buffer = static_init!([u8; CRYPT_SIZE], [0; CRYPT_SIZE]);
-
-    let ccm_mux = static_init!(
-        virtual_aes_ccm::MuxAES128CCM<'static, earlgrey::aes::Aes<'static>>,
-        virtual_aes_ccm::MuxAES128CCM::new(&peripherals.aes, dynamic_deferred_caller)
-    );
-    peripherals.aes.set_client(ccm_mux);
-    ccm_mux.initialize_callback_handle(
-        dynamic_deferred_caller.register(ccm_mux).unwrap(), // Unwrap fail = no deferred call slot available for ccm mux
-    );
-
-    let crypt_buf1 = static_init!([u8; CRYPT_SIZE], [0x00; CRYPT_SIZE]);
-    let ccm_client1 = static_init!(
-        virtual_aes_ccm::VirtualAES128CCM<'static, earlgrey::aes::Aes<'static>>,
-        virtual_aes_ccm::VirtualAES128CCM::new(ccm_mux, crypt_buf1)
-    );
-    ccm_client1.setup();
-    // ccm_mux.set_client(ccm_client1);
-
-    let aes = static_init!(
-        capsules::symmetric_encryption::aes::AesDriver<
-            'static,
-            virtual_aes_ccm::VirtualAES128CCM<'static, earlgrey::aes::Aes<'static>>,
-        >,
-        capsules::symmetric_encryption::aes::AesDriver::new(
-            ccm_client1,
-            aes_source_buffer,
-            aes_dest_buffer,
-            board_kernel.create_grant(
-                capsules::symmetric_encryption::aes::DRIVER_NUM,
-                &memory_allocation_cap
-            )
-        )
-    );
-
-    AES = Some(ccm_client1);
-
     #[cfg(test)]
     {
         use capsules::sha256::Sha256Software;
@@ -741,9 +548,6 @@ unsafe fn setup() -> (
 
         SHA256SOFT = Some(sha_soft);
     }
-
-    hil::symmetric_encryption::AES128CCM::set_client(ccm_client1, aes);
-    hil::symmetric_encryption::AES128::set_client(ccm_client1, aes);
 
     // These symbols are defined in the linker script.
     extern "C" {
@@ -792,10 +596,6 @@ unsafe fn setup() -> (
             sha,
             rng,
             lldb,
-            i2c_master,
-            spi_controller,
-            aes,
-            kv_driver,
             scheduler,
             scheduler_timer,
             watchdog,
