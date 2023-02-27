@@ -26,8 +26,9 @@ use kernel::platform::scheduler_timer::VirtualSchedulerTimer;
 use kernel::platform::{mpu, KernelResources, SyscallDriverLookup, SyscallFilter};
 use kernel::scheduler::priority::PrioritySched;
 use kernel::utilities::registers::interfaces::ReadWriteable;
-use kernel::{capabilities, create_capability, debug, hil, static_init};
-use kernel::{StorageLocation, StorageType};
+use kernel::{
+    capabilities, create_capability, debug, hil, static_init, StorageLocation, StorageType,
+};
 use lowrisc::flash_ctrl::FlashMPConfig;
 use rv32i::csr;
 
@@ -93,7 +94,6 @@ static mut STORAGE_LOCATIONS: [StorageLocation; 2] = [
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
 // TODO:
-// modify OT layout file (for persistent storage pages)
 // add custom buttom(-ish) driver
 
 const VENDOR_ID: u16 = 0x2B3E; // NewAE Technology Inc.
