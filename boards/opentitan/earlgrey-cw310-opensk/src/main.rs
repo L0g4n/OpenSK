@@ -27,6 +27,7 @@ use kernel::platform::{mpu, KernelResources, SyscallDriverLookup, SyscallFilter}
 use kernel::scheduler::priority::PrioritySched;
 use kernel::utilities::registers::interfaces::ReadWriteable;
 use kernel::{capabilities, create_capability, debug, hil, static_init};
+use kernel::{StorageLocation, StorageType};
 use lowrisc::flash_ctrl::FlashMPConfig;
 use rv32i::csr;
 
@@ -72,13 +73,26 @@ const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::Panic
 /// Flash buffer for the custom nvmc driver
 static mut APP_FLASH_BUFFER: [u8; 512] = [0; 512];
 
+static mut STORAGE_LOCATIONS: [StorageLocation; 2] = [
+    // We implement NUM_PAGES = 20 as 16 + 4 to satisfy the MPU.
+    StorageLocation {
+        address: 0xC0000,
+        size: 0x8000, // 16 pages
+        storage_type: StorageType::Store,
+    },
+    StorageLocation {
+        address: 0xD0000,
+        size: 0x2000, // 4 pages (1 page = 2048 kB)
+        storage_type: StorageType::Store,
+    },
+];
+
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x1000] = [0; 0x1000];
 
 // TODO:
-// add storage locations in here (see nordic examples)
 // modify OT layout file (for persistent storage pages)
 // add custom buttom(-ish) driver
 
@@ -237,7 +251,10 @@ unsafe fn setup() -> (
     let process_mgmt_cap = create_capability!(capabilities::ProcessManagementCapability);
     let memory_allocation_cap = create_capability!(capabilities::MemoryAllocationCapability);
 
-    let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&PROCESSES));
+    let board_kernel = static_init!(
+        kernel::Kernel,
+        kernel::Kernel::new_with_storage(&PROCESSES, &STORAGE_LOCATIONS)
+    );
 
     let dynamic_deferred_call_clients =
         static_init!([DynamicDeferredCallClientState; 6], Default::default());
