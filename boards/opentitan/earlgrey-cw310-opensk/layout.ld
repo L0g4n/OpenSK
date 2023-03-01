@@ -10,7 +10,7 @@ MEMORY
    * See https://github.com/lowRISC/opentitan/blob/master/sw/device/silicon_creator/lib/base/static_critical.ld
    * for details
    */
-  ram   (!rx) : ORIGIN = 0x10000650, LENGTH = 0x10000 - 0x650
+  ram   (!rx) : ORIGIN = 0x10000650, LENGTH = 0x20000 - 0x650 /* 0x20000 = 128K */
 }
 
 SECTIONS {
