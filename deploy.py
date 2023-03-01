@@ -125,9 +125,9 @@ cw310_opensk_board = OpenSKBoard(
     firmware_size=None,
     metadata_address=None,
     app_ldscript="opentitan_layout.ld",
-    app_address=0x20030000,  # TODO: address in flash where the app begins
-    storage_address=None,  # TODO
-    storage_size=None,  # TODO
+    app_address=0x20030000, 
+    storage_address=0xC0000,
+    storage_size=0xA000,
     pyocd_target=None,
     openocd_board=None,
     openocd_options=[],
@@ -181,7 +181,7 @@ SUPPORTED_BOARDS = {
 
 # The following value must match the one used in the file
 # `src/entry_point.rs`
-APP_HEAP_SIZE = 20_000
+APP_HEAP_SIZE = 5_000
 
 CARGO_TARGET_DIR = os.environ.get("CARGO_TARGET_DIR", "target")
 
