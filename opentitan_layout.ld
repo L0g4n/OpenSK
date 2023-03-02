@@ -10,10 +10,11 @@ MEMORY {
    */
 
    /* OpenTitan has 2x512kB banks of flash memory and 128kB SRAM.
-    * We reserve 0x30000 at the end of the flash for persistent storage.
+    * According to the OT layout file, addresses between 0x2009_0000 to 0x2010_0000 are intended for flash storage.
+    * They are NOT mapped in the flash memory region.
     */
-  FLASH (X) : ORIGIN = 0x20030000, LENGTH = 256K
-  RAM   (W) : ORIGIN = 0x1000663C, LENGTH = 128K
+  FLASH (X) : ORIGIN = 0x20030000, LENGTH = 0x0007FFC0
+  RAM   (W) : ORIGIN = 0x1000463C, LENGTH = 128K
 }
 
 /*

@@ -466,7 +466,7 @@ index 7d14df037..882d36ffc 100644
      /// process. Processes are not required to call this through the memop
      /// system call, but it aids in debugging the process.
 diff --git a/kernel/src/process_standard.rs b/kernel/src/process_standard.rs
-index a6c3de4b6..d47d9a914 100644
+index a6c3de4b6..c53855473 100644
 --- a/kernel/src/process_standard.rs
 +++ b/kernel/src/process_standard.rs
 @@ -15,7 +15,7 @@ use crate::collections::ring_buffer::RingBuffer;
@@ -514,9 +514,24 @@ index a6c3de4b6..d47d9a914 100644
      fn mark_credentials_pass(
          &self,
          credentials: Option<TbfFooterV2Credentials>,
-@@ -1489,6 +1518,33 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
-             return Err((ProcessLoadError::MpuInvalidFlashLength, remaining_memory));
-         }
+@@ -1598,17 +1627,44 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
+                 // Failed to load process. Insufficient memory.
+                 if config::CONFIG.debug_load_processes {
+                     debug!(
+-                            "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate memory region of size >= {:#X}",
++                            "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate memory region of size >= {:#X}, size in dec: {}",
+                             app_flash.as_ptr() as usize,
+                             app_flash.as_ptr() as usize + app_flash.len() - 1,
+                             process_name,
+-                            min_total_memory_size
+-                        );
++                            min_total_memory_size,
++                            min_total_memory_size,
++                    );
+                 }
+                 return Err((ProcessLoadError::NotEnoughMemory, remaining_memory));
+             }
+         };
  
 +        // Allocate MPU region for the storage locations. The storage locations are currently
 +        // readable by all processes due to lack of stable app id.
@@ -530,21 +545,20 @@ index a6c3de4b6..d47d9a914 100644
 +                    mpu::Permissions::ReadOnly,
 +                    &mut mpu_config,
 +                )
-+                .is_some()
++                .is_none()
 +            {
-+                continue;
-+            }
-+            if config::CONFIG.debug_load_processes {
-+                debug!(
++                if config::CONFIG.debug_load_processes {
++                    debug!(
 +                    "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't allocate flash region",
 +                    storage_location.address,
 +                    storage_location.address + storage_location.size,
 +                    process_name
-+                );
++                    );
++                }
++                return Err((ProcessLoadError::MpuInvalidFlashLength, remaining_memory));
 +            }
-+            return Ok((None, remaining_memory));
 +        }
 +
-         // Determine how much space we need in the application's memory space
-         // just for kernel and grant state. We need to make sure we allocate
-         // enough memory just for that.
+         // Get a slice for the memory dedicated to the process. This can fail if
+         // the MPU returns a region of memory that is not inside of the
+         // `remaining_memory` slice passed to `create()` to allocate the
