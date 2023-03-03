@@ -77,8 +77,9 @@ static mut APP_FLASH_BUFFER: [u8; 512] = [0; 512];
 static mut STORAGE_LOCATIONS: [StorageLocation; 1] = [
     // We implement NUM_PAGES = 20 as 16 + 4 to satisfy the MPU.
     StorageLocation {
-        address: 0x200AFFC0, // base address = origin flash storage + length
-        size: 0xA_000,       // 20 pages
+        // has to be page-aligned
+        address: 0x20080000, // base address = origin flash storage + length
+        size: 16 * 2048,     // 16 pages
         storage_type: StorageType::Store,
     },
 ];
