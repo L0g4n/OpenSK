@@ -74,21 +74,13 @@ const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::Panic
 /// Flash buffer for the custom nvmc driver
 static mut APP_FLASH_BUFFER: [u8; 512] = [0; 512];
 
-// FIXME: the storage locations allocation causes memory allocation errors
 static mut STORAGE_LOCATIONS: [StorageLocation; 1] = [
     // We implement NUM_PAGES = 20 as 16 + 4 to satisfy the MPU.
     StorageLocation {
-        // address: 0x2009_0000, // base address for flash storage
-        address: 0x200AFFC0,
-        // size: 0x8_000, // 16 pages
-        size: 0xA_000, // 20 pages
+        address: 0x200AFFC0, // base address = origin flash storage + length
+        size: 0xA_000,       // 20 pages
         storage_type: StorageType::Store,
     },
-    // StorageLocation {
-    //     address: 0x200AFFC0, // previous address + 0x10000
-    //     size: 0x2000,        // 4 pages (1 page = 2048 kB)
-    //     storage_type: StorageType::Store,
-    // },
 ];
 
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
