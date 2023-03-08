@@ -13,7 +13,7 @@ MEMORY {
       We reserve 0x20_000 at the end of the flash for persistent storage.
     */
   FLASH (X) : ORIGIN = 0x20030000, LENGTH = 0x40000
-  RAM   (W) : ORIGIN = 0x1000463C, LENGTH = 128K
+  RAM   (W) : ORIGIN = 0x1000466C, LENGTH = 128K
 }
 
 /*

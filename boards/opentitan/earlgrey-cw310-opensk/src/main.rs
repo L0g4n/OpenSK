@@ -71,15 +71,17 @@ static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText>
 // How should the kernel respond when a process faults.
 const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
 
+const PAGE_SIZE: usize = 2048;
+
 /// Flash buffer for the custom nvmc driver
 static mut APP_FLASH_BUFFER: [u8; 512] = [0; 512];
 
 static mut STORAGE_LOCATIONS: [StorageLocation; 1] = [
-    // We implement NUM_PAGES = 20 as 16 + 4 to satisfy the MPU.
+    // We implement NUM_PAGES = 20 = 16 + 4  to satisfy the MPU.
     StorageLocation {
         // has to be page-aligned
-        address: 0x20080000, // base address = origin flash storage + length
-        size: 16 * 2048,     // 16 pages
+        address: 0x2007_0000, // base address = origin flash storage + length
+        size: 20 * PAGE_SIZE, // 10 pages
         storage_type: StorageType::Store,
     },
 ];
@@ -88,9 +90,6 @@ static mut STORAGE_LOCATIONS: [StorageLocation; 1] = [
 #[no_mangle]
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
-
-// TODO:
-// add custom buttom(-ish) driver
 
 const VENDOR_ID: u16 = 0x2B3E; // NewAE Technology Inc.
 const PRODUCT_ID: u16 = 0xC310; // CW310
@@ -111,6 +110,7 @@ struct EarlGrey {
         LedHigh<'static, earlgrey::gpio::GpioPin<'static>>,
         8,
     >,
+    dip_switch: &'static capsules::dip_switch::DipSwitch<'static, earlgrey::gpio::GpioPin<'static>>,
     gpio: &'static capsules::gpio::GPIO<'static, earlgrey::gpio::GpioPin<'static>>,
     console: &'static capsules::console::Console<'static>,
     alarm: &'static capsules::alarm::AlarmDriver<
@@ -159,6 +159,7 @@ impl SyscallDriverLookup for EarlGrey {
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
     {
         match driver_num {
+            capsules::dip_switch::DRIVER_NUM => f(Some(self.dip_switch)),
             capsules::led::DRIVER_NUM => f(Some(self.led)),
             capsules::hmac::DRIVER_NUM => f(Some(self.hmac)),
             capsules::sha::DRIVER_NUM => f(Some(self.sha)),
@@ -279,6 +280,21 @@ unsafe fn setup() -> (
         dynamic_deferred_caller,
     )
     .finalize(components::uart_mux_component_static!());
+
+    let dip_switch = components::dip_switch::DipSwitchComponent::new(
+        board_kernel,
+        capsules::dip_switch::DRIVER_NUM,
+        components::dip_switch_component_helper!(
+            earlgrey::gpio::GpioPin,
+            (
+                &peripherals.gpio_port[5], // if not working try 5
+                kernel::hil::gpio::ActivationMode::ActiveLow
+            )
+        ),
+    )
+    .finalize(components::dip_switch_component_static!(
+        earlgrey::gpio::GpioPin
+    ));
 
     // LEDs
     // Start with half on and half off
@@ -496,7 +512,6 @@ unsafe fn setup() -> (
             debug!("Failed to lock memory protection config: {:?}", e);
         }
     }
-
     let mux_otbn = crate::otbn::AccelMuxComponent::new(&peripherals.otbn)
         .finalize(otbn_mux_component_static!());
 
@@ -601,6 +616,7 @@ unsafe fn setup() -> (
     let earlgrey = static_init!(
         EarlGrey,
         EarlGrey {
+            dip_switch,
             gpio,
             led,
             console,
