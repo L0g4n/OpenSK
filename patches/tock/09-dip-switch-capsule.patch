@@ -1,0 +1,309 @@
+diff --git a/boards/components/src/dip_switch.rs b/boards/components/src/dip_switch.rs
+new file mode 100644
+index 000000000..66461962e
+--- /dev/null
++++ b/boards/components/src/dip_switch.rs
+@@ -0,0 +1,93 @@
++use capsules::dip_switch::DipSwitch;
++use core::mem::MaybeUninit;
++use kernel::capabilities;
++use kernel::component::Component;
++use kernel::create_capability;
++use kernel::hil::gpio;
++use kernel::hil::gpio::InterruptWithValue;
++
++#[macro_export]
++macro_rules! dip_switch_component_helper_owned {
++    ($Pin:ty, $(($P:expr, $M:expr)),+ $(,)?) => {
++        $crate::button_component_helper!(
++            $Pin,
++            $((
++                static_init!($Pin, $P),
++                $M
++            ),)*
++        )
++    };
++}
++
++#[macro_export]
++macro_rules! dip_switch_component_helper {
++    ($Pin:ty, $(($P:expr, $M:expr)),+ $(,)?) => {{
++        use kernel::static_init;
++        use kernel::count_expressions;
++        use kernel::hil::gpio::InterruptValueWrapper;
++        const NUM_BUTTONS: usize = count_expressions!($($P),+);
++
++        static_init!(
++            [(&'static InterruptValueWrapper<'static, $Pin>, kernel::hil::gpio::ActivationMode); NUM_BUTTONS],
++            [
++                $(
++                    (static_init!(InterruptValueWrapper<$Pin>, InterruptValueWrapper::new($P))
++                    .finalize(),
++                    $M
++                    ),
++                )*
++            ]
++        )
++    };};
++}
++
++#[macro_export]
++macro_rules! dip_switch_component_static {
++    ($Pin:ty $(,)?) => {{
++        kernel::static_buf!(capsules::dip_switch::DipSwitch<'static, $Pin>)
++    };};
++}
++
++pub struct DipSwitchComponent<IP: 'static + gpio::InterruptPin<'static>> {
++    board_kernel: &'static kernel::Kernel,
++    driver_num: usize,
++    button_pins: &'static [(
++        &'static gpio::InterruptValueWrapper<'static, IP>,
++        gpio::ActivationMode,
++    )],
++}
++
++impl<IP: 'static + gpio::InterruptPin<'static>> DipSwitchComponent<IP> {
++    pub fn new(
++        board_kernel: &'static kernel::Kernel,
++        driver_num: usize,
++        button_pins: &'static [(
++            &'static gpio::InterruptValueWrapper<'static, IP>,
++            gpio::ActivationMode,
++        )],
++    ) -> Self {
++        Self {
++            board_kernel: board_kernel,
++            driver_num,
++            button_pins,
++        }
++    }
++}
++
++impl<IP: 'static + gpio::InterruptPin<'static>> Component for DipSwitchComponent<IP> {
++    type StaticInput = &'static mut MaybeUninit<DipSwitch<'static, IP>>;
++    type Output = &'static DipSwitch<'static, IP>;
++
++    fn finalize(self, static_buffer: Self::StaticInput) -> Self::Output {
++        let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
++        let dip_switch = static_buffer.write(capsules::dip_switch::DipSwitch::new(
++            self.button_pins,
++            self.board_kernel.create_grant(self.driver_num, &grant_cap),
++        ));
++        for (pin, _) in self.button_pins.iter() {
++            pin.set_client(dip_switch);
++        }
++
++        dip_switch
++    }
++}
+diff --git a/boards/components/src/lib.rs b/boards/components/src/lib.rs
+index 69e551751..2e44c0050 100644
+--- a/boards/components/src/lib.rs
++++ b/boards/components/src/lib.rs
+@@ -21,6 +21,7 @@ pub mod dac;
+ pub mod debug_queue;
+ pub mod debug_writer;
+ pub mod digest;
++pub mod dip_switch;
+ pub mod flash;
+ pub mod fm25cl;
+ pub mod ft6x06;
+diff --git a/capsules/src/dip_switch.rs b/capsules/src/dip_switch.rs
+new file mode 100644
+index 000000000..89159d0bf
+--- /dev/null
++++ b/capsules/src/dip_switch.rs
+@@ -0,0 +1,180 @@
++//! Provides userspace control of DIP switches on a board.
++//!
++//! Mimics the same API as the button capsule. The value of a dip switch
++//! will always be 0, however, as we are only interested in "switches",
++//! i.e. a switch from one edge to another, as an interrupt.
++
++use core::cell::Cell;
++
++use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
++use kernel::hil::gpio;
++use kernel::hil::gpio::{Configure, InterruptWithValue};
++use kernel::syscall::{CommandReturn, SyscallDriver};
++use kernel::{ErrorCode, ProcessId};
++
++/// Syscall driver number.
++use crate::driver;
++pub const DRIVER_NUM: usize = driver::NUM::Button as usize;
++
++/// This capsule keeps track for each app of which buttons it has a registered
++/// interrupt for. `SubscribeMap` is a bit array where bits are set to one if
++/// that app has an interrupt registered for that button.
++pub type SubscribeMap = u32;
++
++type DipSwitchGrant = Grant<App, UpcallCount<1>, AllowRoCount<0>, AllowRwCount<0>>;
++
++/// This capsule keeps track for each app of which buttons it has a registered
++/// interrupt for. `SubscribeMap` is a bit array where bits are set to one if
++/// that app has an interrupt registered for that button.
++#[derive(Default)]
++pub struct App {
++    subscribe_map: u32,
++}
++
++/// Manages the list of GPIO pins that are connected to buttons and which apps
++/// are listening for interrupts from which buttons.
++pub struct DipSwitch<'a, P: gpio::InterruptPin<'a>> {
++    pins: &'a [(&'a gpio::InterruptValueWrapper<'a, P>, gpio::ActivationMode)],
++    apps: DipSwitchGrant,
++}
++
++impl<'a, P: gpio::InterruptPin<'a>> DipSwitch<'a, P> {
++    pub fn new(
++        pins: &'a [(&'a gpio::InterruptValueWrapper<'a, P>, gpio::ActivationMode)],
++        grant: DipSwitchGrant,
++    ) -> Self {
++        for (i, &(pin, _)) in pins.iter().enumerate() {
++            pin.make_input();
++            pin.set_value(i as u32);
++        }
++
++        Self { pins, apps: grant }
++    }
++}
++
++/// ### `subscribe_num`
++///
++/// - `0`: Set callback for pin interrupts. Note setting this callback has
++///   no reliance on individual pins being configured as interrupts. The
++///   interrupt will be called with two parameters: the index of the button
++///   that triggered the interrupt and the pressed/not pressed state of the
++///   button.
++const UPCALL_NUM: usize = 0;
++
++impl<'a, P: gpio::InterruptPin<'a>> SyscallDriver for DipSwitch<'a, P> {
++    /// Configure interrupts and read state for buttons.
++    ///
++    /// `data` is the index of the button in the button array as passed to
++    /// `Button::new()`.
++    ///
++    /// All commands greater than zero return `INVAL` if an invalid button
++    /// number is passed in.
++    ///
++    /// ### `command_num`
++    ///
++    /// - `0`: Driver check and get number of buttons on the board.
++    /// - `1`: Enable interrupts for a given button. This will enable both press
++    ///   and depress events.
++    /// - `2`: Disable interrupts for a button. No affect or reliance on
++    ///   registered callback.
++    /// - `3`: Read the current state of the button. Always returns false.
++    fn command(
++        &self,
++        command_num: usize,
++        data: usize,
++        _: usize,
++        processid: ProcessId,
++    ) -> CommandReturn {
++        let pins = self.pins;
++        match command_num {
++            // return button count
++            0 => CommandReturn::success_u32(pins.len() as u32),
++
++            // enable interrupts for a button
++            1 => {
++                if data < pins.len() {
++                    self.apps
++                        .enter(processid, |cntr, _| {
++                            cntr.subscribe_map |= 1 << data;
++                            let _ = pins[data]
++                                .0
++                                .enable_interrupts(gpio::InterruptEdge::EitherEdge);
++                            CommandReturn::success()
++                        })
++                        .unwrap_or_else(|err| CommandReturn::failure(err.into()))
++                } else {
++                    CommandReturn::failure(ErrorCode::INVAL) /* impossible button */
++                }
++            }
++
++            // disable interrupts for a button
++            2 => {
++                if data >= pins.len() {
++                    CommandReturn::failure(ErrorCode::INVAL) /* impossible button */
++                } else {
++                    let res = self
++                        .apps
++                        .enter(processid, |cntr, _| {
++                            cntr.subscribe_map &= !(1 << data);
++                            CommandReturn::success()
++                        })
++                        .unwrap_or_else(|err| CommandReturn::failure(err.into()));
++
++                    // are any processes waiting for this button?
++                    let interrupt_count = Cell::new(0);
++                    self.apps.each(|_, cntr, _| {
++                        if cntr.subscribe_map & (1 << data) != 0 {
++                            interrupt_count.set(interrupt_count.get() + 1);
++                        }
++                    });
++
++                    // if not, disable the interrupt
++                    if interrupt_count.get() == 0 {
++                        self.pins[data].0.disable_interrupts();
++                    }
++
++                    res
++                }
++            }
++
++            // read input
++            3 => {
++                if data >= pins.len() {
++                    CommandReturn::failure(ErrorCode::INVAL) /* impossible button */
++                } else {
++                    CommandReturn::success_u32(0)
++                }
++            }
++
++            // default
++            _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
++        }
++    }
++
++    fn allocate_grant(&self, processid: ProcessId) -> Result<(), kernel::process::Error> {
++        self.apps.enter(processid, |_, _| {})
++    }
++}
++
++impl<'a, P: gpio::InterruptPin<'a>> gpio::ClientWithValue for DipSwitch<'a, P> {
++    fn fired(&self, pin_num: u32) {
++        let interrupt_count = Cell::new(0);
++
++        // schedule callback with the pin number and value
++        self.apps.each(|_, cntr, upcalls| {
++            if cntr.subscribe_map & (1 << pin_num) != 0 {
++                interrupt_count.set(interrupt_count.get() + 1);
++                upcalls
++                    .schedule_upcall(UPCALL_NUM, (pin_num as usize, 0, 0))
++                    .ok();
++            }
++        });
++
++        // It's possible we got an interrupt for a process that has since died
++        // (and didn't unregister the interrupt). Lazily disable interrupts for
++        // this button if so.
++        if interrupt_count.get() == 0 {
++            self.pins[pin_num as usize].0.disable_interrupts();
++        }
++    }
++}
+diff --git a/capsules/src/lib.rs b/capsules/src/lib.rs
+index db2459d5a..b5e90c178 100644
+--- a/capsules/src/lib.rs
++++ b/capsules/src/lib.rs
+@@ -29,6 +29,7 @@ pub mod crc;
+ pub mod ctap;
+ pub mod dac;
+ pub mod debug_process_restart;
++pub mod dip_switch;
+ pub mod driver;
+ pub mod fm25cl;
+ pub mod ft6x06;
