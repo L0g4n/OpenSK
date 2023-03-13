@@ -121,13 +121,13 @@ cw310_opensk_board = OpenSKBoard(
     arch="riscv32imc-unknown-none-elf",
     page_size=2048,
     kernel_address=0,
-    padding_address=None,
+    padding_address=0x30_000,
     firmware_size=None,
     metadata_address=None,
     app_ldscript="opentitan_layout.ld",
-    app_address=0x20030000, 
-    storage_address=0xC0000,
-    storage_size=0xA000,
+    app_address=0x40_000,
+    storage_address=0x2008_0000,
+    storage_size=0xA000, # 20 pages
     pyocd_target=None,
     openocd_board=None,
     openocd_options=[],
@@ -175,7 +175,7 @@ SUPPORTED_BOARDS = {
             kernel_address=0x1000,
             nordic_dfu=True,
         ),
-    "cw310_opensk":
+    "earlgrey-cw310-opensk":
         cw310_opensk_board,
 }
 
