@@ -10,8 +10,9 @@ license = "Apache-2.0"
 edition = "2018"
 
 [target.'cfg(any(target_arch = "arm", target_arch = "riscv32"))'.dependencies]
-libtock_runtime = { path = "third_party/libtock-rs/runtime", default-features = false, features = [
+libtock_runtime = { path = "third_party/libtock-rs/runtime", features = [
   "no_auto_layout",
+  "alloc_init",
 ] }
 
 [dependencies]
